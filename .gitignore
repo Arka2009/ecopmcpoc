@@ -1,0 +1,12 @@
+# Add any directories, files, or patterns you don't want to be tracked by version control
+*.pyc
+*.log
+*.o
+
+# Datasets and logs
+*.csv
+*dataset*/
+dump/
+
+# Java Class Files
+*.class
