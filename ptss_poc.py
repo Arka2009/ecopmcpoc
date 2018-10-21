@@ -150,8 +150,8 @@ class UE(object):
                 self.ticks = self.ticks + 10 # Increment by 5us
                 finish     = self.ticks
 
-                print("No cores allocate for UE{%d,%d} during this phase-%s during [%d,%d]"\
-                %(self.subframe,self.crnti,self.state.name,start,finish))
+                #print("No cores allocate for UE{%d,%d} during this phase-%s during [%d,%d]"\
+                #%(self.subframe,self.crnti,self.state.name,start,finish))
                 return (start,finish)
             else :
                 start                     = self.ticks
