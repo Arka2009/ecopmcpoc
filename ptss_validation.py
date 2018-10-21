@@ -46,18 +46,22 @@ def main():
 
     
     # Perform Convilution pf pd1,pdf2,pdf3,pd
-    pdf123 = np.convolve(np.convolve(pdf1,pdf2),pdf3)
-    c      = np.convolve(np.convolve(pdf123,pdf123),pdf4)
-    u      = list(range(0,len(c)))
-    u1     = [x/1000.0 for x in u]
-    
-    tmp     = pd.read_csv("alloc_prbs-32_cores-8/dataset_sf.csv")
-    c2      = tmp['ExecutionTime']
-    pdfc,u2 = ptsl.pdf(c2,u1)
-    plt.plot(u2[1:],pdfc,label="Actual Distribution",marker='o')
-    plt.plot(u1,c,color="blue",label="Convoluted Distribution")
-    plt.legend()
-    plt.savefig("dump/pdf-compare.pdf")
+    print(len(u1))
+    print(len(u2))
+    print(len(u3))
+    print(len(u4))
+#    pdf123 = np.convolve(np.convolve(pdf1,pdf2),pdf3)
+#    c      = np.convolve(np.convolve(pdf123,pdf123),pdf4)
+#    u      = list(range(0,len(c)))
+#    u5     = [x/1000.0 for x in u]
+#    
+#    tmp     = pd.read_csv("alloc_prbs-32_cores-8/dataset_sf.csv")
+#    c2      = tmp['ExecutionTime']
+#    pdfc,u2 = ptsl.pdf(c2,u5)
+#    plt.plot(u2[1:],pdfc,label="Actual Distribution",marker='o')
+#    plt.plot(u5,c,color="blue",label="Convoluted Distribution")
+#    plt.legend()
+#    plt.savefig("dump/pdf-compare.pdf")
     
 
 
