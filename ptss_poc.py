@@ -72,7 +72,7 @@ def next_state(curr_state):
 
     return ns[curr_state]
 
-def dummy_ue(subframeId,criticality):
+def dummy_ue(subframeId,dmr3,criticality):
     """ 
         Generate a random UE,
         criticality = 'Hard' or
@@ -80,12 +80,12 @@ def dummy_ue(subframeId,criticality):
     """
     if criticality == "Hard" :
         crnti         = 2308
-        prbs          = np.random.random_integers(10,20)
+        prbs          = np.random.random_integers(15,20)
         dmr           = 0.01
     elif criticality == "Soft" :
         crnti         = 9987
-        prbs          = np.random.random_integers(80,90)
-        dmr           = 0.2
+        prbs          = 32 #np.random.random_integers(75,80)
+        dmr           = dmr3
     else :
         raise IOError("unsupported Criticality")
     layers        = 4
@@ -145,9 +145,8 @@ class UE(object):
             return (self.ticks,self.ticks)
         else :
             if (num_cores <= 0): # No cores allocated
-                self.state = UEExecState.WAITING
                 start      = self.ticks
-                self.ticks = self.ticks + 10 # Increment by 5us
+                self.ticks = self.ticks + 20 # Increment by 20us
                 finish     = self.ticks
 
                 #print("No cores allocate for UE{%d,%d} during this phase-%s during [%d,%d]"\
@@ -184,7 +183,7 @@ class UE(object):
 
                 # Compute the slack and decide if the UE needs to be dropped
                 slack                     = self.deadline - (start + exec_time)
-                if (slack <= 0):
+                if (slack < 0):
                     self.state            = UEExecState.DROPPED
                     self.ticks            = self.deadline
                 else :
@@ -411,16 +410,16 @@ class UE(object):
         else :
             return (self.ticks >= other.ticks)
 
-def execute_1_ue():
+def execute_1_ue(dmr):
     """ Main Execution program """
     # Load the pdf tables for all (workload,allocation)
     # Combination
     #(ph1tbl,ph2tbl,ph3tbl,ph4tbl) = ptsl.load_risk_alloc_table()
     
 
-    num_subframes = 20000
-    ue_list1 = [dummy_ue(i,"Hard") for i in range(0,num_subframes)]
-    ue_list2 = [dummy_ue(i,"Soft") for i in range(0,num_subframes)]
+    num_subframes = 2
+    ue_list1 = []#[dummy_ue(i,dmr,"Hard") for i in range(0,num_subframes)]
+    ue_list2 = [dummy_ue(i,dmr,"Soft") for i in range(0,num_subframes)]
     ue_list  = ue_list1 + ue_list2
     numT    = num_subframes
     heapq.heapify(ue_list)
@@ -464,7 +463,7 @@ def execute_1_ue():
         elapsed = timeit.default_timer() - start_time
         if(ue.state == UEExecState.DROPPED or ue.state == UEExecState.FINISHED):
             print(ue)
-            print("Simulation Time : %f s\n\n"%elapsed)
+            #print("Simulation Time : %f s\n\n"%elapsed)
     
     # Drain the allocinfo_q
 #    while not allocinfo_q.empty():
@@ -481,18 +480,20 @@ def test_inverse_sampling():
     print(ptsl.inv_transform_sampling(cdf,xp[1:]))
   
 def main_test():
-    ue_stats,alloc_stats,total_time_steps = execute_1_ue()
-    numT = list(range(0,((total_time_steps-1)*(ptsl.T))+ptsl.D,2))
+    ue_stats,alloc_stats,total_time_steps = execute_1_ue(0.3)
+    numT = np.array(list(range(0,((total_time_steps-1)*(ptsl.T))+ptsl.D,2)))
     m    = []
     for t in numT :
         m.append(ptsl.get_occupied_cores(alloc_stats,t))
         
     #print(numT)
     #print(m)
-    plt.plot(numT,m)
-    plt.xlabel("Time (us)")
+    max_demand = np.max(m)
+    plt.plot(numT/1000.0,m,label="Maximum Demand "+str(max_demand))
+    plt.xlabel("Time (ms)")
     plt.ylabel("Total Demanded Cores")
     plt.title("Core Demand Profile (To meet the DMR)")
+    plt.legend()
     plt.savefig("core-demand-profile.pdf")
     
 #    for s,e,m in alloc_stats:
@@ -500,6 +501,3 @@ def main_test():
         
 if __name__=="__main__":
     main_test()
-    #print(dummy_ue(898,"Hard"))
-        
-    

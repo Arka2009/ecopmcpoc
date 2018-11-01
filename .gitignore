@@ -8,5 +8,16 @@
 *dataset*/
 dump/
 
+# Images and pdf dumps
+*.jpg
+*.svg
+*.png
+*.pdf
+
 # Java Class Files
 *.class
+
+# Other Generated Files
+pdf-db*/
+images/
+*.npy
