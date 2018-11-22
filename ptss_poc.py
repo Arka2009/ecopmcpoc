@@ -29,49 +29,6 @@ ph1s2_remcomp_db = np.load("analyses/ph234db_cum.npy")
 ph2s2_rempcom_db = np.load("analyses/ph34db_cum.npy")
 ph3s2_remcomp_db = np.load("analyses/ph4db_cum.npy")
 
-class UEExecState(Enum):
-    """ 
-        The execution is broken down into multiple states.
-        A state may either denote a phase where multiple 
-        parallel control flow might exist concurrently or
-        it might also denote a waiting state, when the UE
-        has arrived but still waiting to be assigned to be 
-        assigned a 
-        set of cores.
-
-        NOTE : Please Generalize it to N-parallel phases 
-    """
-    INVALID  = 15        # Invalid State, Neither arrived nor is its workload known
-    FUTURE   = 12        # The UE has not arrived but its workload is known.
-    WAITING  = 0
-    PH1S1    = 1
-    PH2S1    = 2
-    PH3S1    = 3
-    PH1S2    = 5
-    PH2S2    = 6
-    PH3S2    = 7
-    FINISHED = 9
-    DROPPED  = 10
-
-def next_state(curr_state):
-    """ 
-        Returns the next state.
-        Try to make it a class method
-    """
-    ns = {
-        UEExecState.WAITING  : UEExecState.PH1S1,    # Transition Marks the end of PH1S1 
-        UEExecState.PH1S1    : UEExecState.PH2S1,    # Transition Marks the end of PH2S1 
-        UEExecState.PH2S1    : UEExecState.PH3S1,    # Transition Marks the end of PH3S1 
-        UEExecState.PH3S1    : UEExecState.PH1S2,    # Transition Marks the end of PH1S2
-        UEExecState.PH1S2    : UEExecState.PH2S2,    # Transition Marks the end of PH2S2 
-        UEExecState.PH2S2    : UEExecState.PH3S2,    # Transition Marks the end of PH3S2 
-        UEExecState.PH3S2    : UEExecState.FINISHED, # Transition Marks the end of PH4
-        UEExecState.FINISHED : UEExecState.FINISHED,
-        UEExecState.DROPPED  : UEExecState.DROPPED
-        }
-
-    return ns[curr_state]
-
 def dummy_ue(subframeId,dmr3,criticality):
     """ 
         Generate a random UE,

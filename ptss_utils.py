@@ -7,10 +7,14 @@ Created on Wed Oct 17 13:10:50 2018
 """
 import numpy as np
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib import cm
 import pandas as pd
 import scipy
 import scipy.signal
 import timeit
+import io
+from enum import Enum
 
 # Global Constants
 NUMBINS   = 2000                    # Used Internally by CDF and PDFs functions
@@ -18,12 +22,68 @@ T         = 1000                    # In us
 D         = 2500                    # Deadline
 M         = 26                      # Total number of Cores available in the system
 W         = 100                     # Total number of PRBs 
+TD        = np.arange(0,D,0.1)      # Discretized Time Steps
 
 ##(Check 16000/12000/10000)
 DELTA     = 1.0                         # Execution Time Granularity (1us)
-BINS      = np.arange(0,12000,DELTA)    # Bin-edges of the histogram/pdf (Bin-width = 1us) of each phase execution times
+BINS      = np.arange(0,25000,DELTA)    # Bin-edges of the histogram/pdf (Bin-width = 1us) of each phase execution times
 Xp        = np.array([(BINS[i]+BINS[i+1])/2 for i in range(0,len(BINS)-1)]) # Mid Point of Each Bins
 
+class UEExecState(Enum):
+    """ 
+        The execution is broken down into multiple states.
+        A state may either denote a phase where multiple 
+        parallel control flow might exist concurrently or
+        it might also denote a waiting state, when the UE
+        has arrived but still waiting to be assigned to be 
+        assigned a 
+        set of cores.
+
+        A state like PH1S1 means the UE has finished executing
+        PH1S1 and waiting for next states.
+
+        NOTE : Please Generalize it to N-parallel phases 
+    """
+    INVALID  = 15        # Invalid State, Neither arrived nor is its workload known
+    FUTURE   = 12        # The UE has not arrived but its workload is known.
+    WAITING  = 0
+    PH1S1    = 1
+    PH2S1    = 2
+    PH3S1    = 3
+    PH1S2    = 5
+    PH2S2    = 6
+    PH3S2    = 7
+    FINISHED = 9
+    DROPPED  = 10
+
+def next_state(curr_state):
+    """ 
+        Returns the next state.
+        Try to make it a class method
+    """
+    ns = {
+        UEExecState.WAITING  : UEExecState.PH1S1,    # Transition Marks the end of PH1S1 
+        UEExecState.PH1S1    : UEExecState.PH2S1,    # Transition Marks the end of PH2S1 
+        UEExecState.PH2S1    : UEExecState.PH3S1,    # Transition Marks the end of PH3S1 
+        UEExecState.PH3S1    : UEExecState.PH1S2,    # Transition Marks the end of PH1S2
+        UEExecState.PH1S2    : UEExecState.PH2S2,    # Transition Marks the end of PH2S2 
+        UEExecState.PH2S2    : UEExecState.PH3S2,    # Transition Marks the end of PH3S2 
+        UEExecState.PH3S2    : UEExecState.FINISHED, # Transition Marks the end of PH4
+        UEExecState.FINISHED : UEExecState.FINISHED,
+        UEExecState.DROPPED  : UEExecState.DROPPED
+        }
+
+    return ns[curr_state]
+
+def is_final(curr_state):
+    """
+        Check if the final state is 
+        reached or not
+    """
+    if curr_state == UEExecState.FINISHED or curr_state == UEExecState.DROPPED :
+        return True
+    else:
+        return False
 
 #
 ## 
@@ -40,6 +100,20 @@ Xp        = np.array([(BINS[i]+BINS[i+1])/2 for i in range(0,len(BINS)-1)]) # Mi
 #ph2s2_rempcom_db   = np.full((W,M,23997),-1.2)
 #ph3s2_remcomp_db   = np.full((W,M,11999),-1.2)
 
+def close(a,b,tol=1e-3):
+    """ 
+        Check if two values are nearly close 
+        to each other.
+    """
+    if abs(a) > 0 and abs(b) > 0:
+        err = abs(a-b)/np.min([abs(a),abs(b)])
+        if err < tol :
+            return True
+        else :
+            return False
+    else :
+        raise ValueError("Both values must be non-zero")
+
 class etPDF(object):
     """ 
         What is the Data-Stucture used to represent
@@ -54,16 +128,45 @@ class etPDF(object):
         Wherever possible the method names are similar to
         the one used by scipy.stats.rv_histogram class.
     """
-    def __init__(self,bins,bin_edges):
-        assert len(bins) + 1 == len(bin_edges),"Incompatible sizes of bins(%d) and bin_edges(%d)" % (len(bins),len(bin_edges))
-        self.bins      = bins
-        self.bin_edges = bin_edges
-        self.delta     = 1           # Don't Touch bin-edges (always 1 us)
+    def __init__(self,ds,support,density=False):
+        if not density:
+            # Compute the support
+            self.inf     = np.min(support)
+            self.sup     = np.max(support)
+            self.support = support
 
-        # CDF values at selected x
-        cdf_vals       = np.cumsum(self.bins)
-        self.Fp        = cdf_vals/cdf_vals[-1]
-        self.xp        = np.array([(bin_edges[i]+bin_edges[i+1])/2 for i in range(0,len(bin_edges)-1)]) # The x coordinates where pdf and cdf functions are given 
+            # Compute the histogram
+            self.bins, self.bin_edges = np.histogram(ds,bins=support,density=True)
+            self.delta                = self.bin_edges[1]-self.bin_edges[0]       # Bin spacing is constant
+
+            # CDF values at selected x
+            cdf_vals       = np.cumsum(self.bins)
+            self.Fp        = cdf_vals/cdf_vals[-1]
+            self.xp        = np.array([(self.bin_edges[i]+self.bin_edges[i+1])/2 for i in range(0,len(self.bin_edges)-1)]) # The x coordinates where pdf and cdf functions are given 
+        else :
+            # Treat the ds a the pdf with the given support
+            if (len(ds) + 1 == len(support)):
+                # Compute the support
+                self.inf     = np.min(support)
+                self.sup     = np.max(support)
+                self.support = support
+                
+                self.bins      = ds
+                self.bin_edges = support
+                self.delta     = self.bin_edges[1]-self.bin_edges[0]       # Bin spacing is constant
+
+                # CDF values at selected x
+                cdf_vals       = np.cumsum(self.bins)
+                self.Fp        = cdf_vals/cdf_vals[-1]
+                self.xp        = np.array([(self.bin_edges[i]+self.bin_edges[i+1])/2 for i in range(0,len(self.bin_edges)-1)]) # The x coordinates where pdf and cdf functions are given 
+            else:
+                print(len(ds) + 1)
+                print(len(support))
+                raise ValueError("Support and PDF vector mismatch !!!")
+    
+
+
+
 
     def pdf(self,x):
          """ Evaluate the cdf at x """
@@ -127,11 +230,17 @@ class etPDF(object):
             Check how to perform numerical convolution
             in scipy
         """
-        conv_pdf   = np.convolve(self.bins,other.bins)
-        conv_edges = np.arange(0,len(conv_pdf)+1)
-
-        ret = etPDF(conv_pdf,conv_edges) # Bin edges are assumed to be same
-
+        if (close(self.delta,other.delta)):
+            conv_pdf     = np.convolve(self.bins,other.bins)*self.delta
+            conv_inf     = self.inf + other.inf
+            conv_sup     = self.sup + other.sup
+            N            = len(conv_pdf) + 1
+            conv_support = np.linspace(conv_inf,conv_sup,N)
+        else :
+            print(self.delta)
+            print(other.delta)
+            raise ValueError("Delta of both the distributions must be same")
+        ret = etPDF(conv_pdf,conv_support,density=True) # Bin edges are assumed to be same
         return ret
     
     def __radd__(self,other):
@@ -142,16 +251,22 @@ class etPDF(object):
             Check how to perform numerical convolution
             in scipy
         """
-        conv_pdf   = np.convolve(self.bins,other.bins)
-        conv_edges = np.arange(0,len(conv_pdf)+1)
-
-        ret = etPDF(conv_pdf,conv_edges) # Bin edges are assumed to be same
-
+        if (close(self.delta,other.delta)):
+            conv_pdf     = np.convolve(self.bins,other.bins)*self.delta
+            conv_inf     = self.inf + other.inf
+            conv_sup     = self.sup + other.sup
+            N            = len(conv_pdf) + 1
+            conv_support = np.linspace(conv_inf,conv_sup,N)
+        else :
+            print(self.delta)
+            print(other.delta)
+            raise ValueError("Delta of both the distributions must be same")
+        ret = etPDF(conv_pdf,conv_support,density=True) # Bin edges are assumed to be same
         return ret
     
     def __str__(self):
         """ Display Summary Statistics """
-        return "Estimated Ditribution Mean : %f, std %f" % (self.mean(),self.std())
+        return "Estimated Distribution Mean : %f, std : %f, delta : %f" % (self.mean(),self.std(),self.delta)
 
     def viz(self):
          """ Plot """
@@ -166,9 +281,7 @@ class etPDF(object):
         
          elapsed_time = timeit.default_timer() - start_time
          print("elapsed time %f " % elapsed_time)
-        
-    
-
+   
 def test_etPDF():
     # Create (Random) Datasets
     N = 500000
@@ -267,64 +380,19 @@ def get_dataset_phase(prefixf):
 
     return (ph1v,ph2v,intrlv1,ph3v,intrlv2,ph4v,crcturbo)
 
-def test_above():
-    prefixf = "Validation-Datasets/alloc_prbs-90_cores-16"
-    (ph1v,ph2v,intrlv1,ph3v,intrlv2,ph4v,crcturbo) = get_dataset_phase(prefixf)
-    total = 2*(np.mean(ph1v)+np.mean(ph2v)+np.mean(ph3v)+np.mean(intrlv1))+np.mean(intrlv2)+np.mean(ph4v)+np.mean(crcturbo)
-    print(total)
-    ##plt.hist(ph1v,bins=BINS,density=True)
-    #plt.hist(ph4v,bins=BINS,density=True)
-    #plt.xlim(300,1250)
-    #plt.ylim(0,0.025)
-    #plt.title("Mean : "+str(np.mean(ph4v))+", Std : "+str(np.std(ph4v)))
-    #plt.savefig("test-ph4-pdf4.pdf")
-    #tmp = pd.read_csv(prefixf+"/dataset_sf.csv")
-    #t2  = tmp["EcecutionTime"].values
-    #print(t2)
-    #print(np.mean(ph1v))
-    #print(np.std(ph1v))
-    #,bins=BINS)
 
-def compare_pdfs():
+def get_dataset_phase_filtered(prefixf):
     """ 
-        Compare the estimated and 
-        actual probability distribution 
-        of the subframe execution time.
+        Filter the dataset to remove the
+        repeated values.
 
-        This is done for a particular workload
-        and allocation case.
+        Also treat the different slots
+        separately
     """
-    # The pdfs are already computed, load them from the pdf db file
-    ph1_table = np.load("pdf-risk-db3/ph1db.npy")
-    ph2_table = np.load("pdf-risk-db3/ph2db.npy")
-    ph3_table = np.load("pdf-risk-db3/ph3db.npy")
-    ph4_table = np.load("pdf-risk-db3/ph4db.npy")
-    i1_table  = np.load("pdf-risk-db3/i1db.npy")
-    i2_table  = np.load("pdf-risk-db3/i2db.npy")
-    crc_table = np.load("pdf-risk-db3/crcdb.npy")
-    (w,m)     = (99,1) # Indices for the PDF table
-    i1        = etPDF(i1_table[w,:],BINS)
-    i2        = etPDF(i2_table[w,:],BINS)
-    crc       = etPDF(crc_table[w,:],BINS)
+    ph1v,ph2v,intrlv1,ph3v,intrlv2,ph4v,crcturbo = \
+    get_dataset_phase(prefixf)
 
-    # Retrieve the PDFs of all the phases
-    pdf1 = etPDF(ph1_table[w,m,:],BINS)
-    pdf2 = etPDF(ph2_table[w,m,:],BINS)
-    pdf3 = etPDF(ph3_table[w,m,:],BINS)
-    pdf4 = etPDF(ph4_table[w,m,:],BINS)
-
-    # Combine the PDFs using convolution ()
-    sfet = pdf1 + pdf1 + pdf2 + pdf2 + i1 + i1 + pdf3 + pdf3 + i2 + pdf4 + crc
-
-    # Use another method to estimate the PDF
-    # --------------------------------------
-    # How is different from the previous one ?
-    # 1. I do not use the precomputed PDF tables
-    # 2. All the tasks of a phase are drawn only once. 
-    #    Basically I am more interested in the phase 
-    #    level profiling.
-    (ph1v,ph2v,intrlv1,ph3v,intrlv2,ph4v,crcturbo) = \
-    get_dataset_phase("/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-28/alloc_prbs-100_cores-2/")
+    # Separate out the phase and slot boundaries
     ph1t   = [ph1v[i] for i in range(0,len(ph1v),16)]
     ph1s1  = np.array([ph1t[i] for i in range(0,8000) if i%2 == 0])
     ph1s2  = np.array([ph1t[i] for i in range(0,8000) if i%2 == 1])
@@ -338,51 +406,8 @@ def compare_pdfs():
     ph3s2  = np.array([ph3t[i] for i in range(0,8000) if i%2 == 1])
     ph4    = np.array([ph4v[i] for i in range(0,len(ph4v),24)])
 
-    ph1s1_pdf,_ = np.histogram(ph1s1,bins=BINS,density=True)
-    ph1s2_pdf,_ = np.histogram(ph1s2,bins=BINS,density=True)
-    ph2s1_pdf,_ = np.histogram(ph2s1,bins=BINS,density=True)
-    ph2s2_pdf,_ = np.histogram(ph2s2,bins=BINS,density=True)
-    i1s1_pdf,_  = np.histogram(intrlv1s1,bins=BINS,density=True)
-    i1s2_pdf,_  = np.histogram(intrlv1s2,bins=BINS,density=True)
-    ph3s1_pdf,_ = np.histogram(ph3s1,bins=BINS,density=True)
-    ph3s2_pdf,_ = np.histogram(ph3s2,bins=BINS,density=True)
-    i2_pdf,_    = np.histogram(intrlv2,bins=BINS,density=True)
-    ph4_pdf,_   = np.histogram(ph4,bins=BINS,density=True)
-    crc_pdf,_   = np.histogram(crcturbo,bins=BINS,density=True)
+    return (ph1s1,ph1s2,ph2s1,ph2s2,intrlv1s1,intrlv1s2,ph3s1,ph3s2,intrlv2,ph4,crcturbo)
 
-    ph1s1pdf    = etPDF(ph1s1_pdf,BINS)
-    ph1s2pdf    = etPDF(ph1s2_pdf,BINS)
-    ph2s1pdf    = etPDF(ph2s1_pdf,BINS)
-    ph2s2pdf    = etPDF(ph2s2_pdf,BINS)
-    i1s1pdf     = etPDF(i1s1_pdf,BINS)
-    i1s2pdf     = etPDF(i1s2_pdf,BINS)
-    ph3s1pdf    = etPDF(ph3s1_pdf,BINS)
-    ph3s2pdf    = etPDF(ph3s2_pdf,BINS)
-    i2pdf       = etPDF(i2_pdf,BINS)
-    ph4pdf      = etPDF(ph4_pdf,BINS)
-    crcpdf      = etPDF(crc_pdf,BINS)
-
-    sfet2       = ph1s1pdf + ph1s2pdf + ph2s1pdf + ph2s2pdf + i1s1pdf + i1s2pdf + ph3s1pdf + ph3s2pdf + i2pdf + ph4pdf + crcpdf
-
-    # File
-    pf1   = "/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-28/alloc_prbs-100_cores-2/dataset_sf.csv"
-    pf2   = "/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-19/alloc_prbs-100_cores-2/dataset_sf.csv"
-    vals1 = pd.read_csv(pf1)
-    vals2 = pd.read_csv(pf2)
-    tmp1  = (vals1["ExecutionTime"].values)*1000
-    tmp2  = (vals2["ExecutionTime"].values)*1000
-    plt.hist(tmp1,bins=len(BINS),density=True,label="Oct-28")
-    plt.hist(tmp2,bins=len(BINS),density=True,label="Oct-19")
-
-    # Plot the estimated
-    plt.plot(sfet.xp,sfet.pdf(sfet.xp),label="Estimated")
-    plt.plot(sfet2.xp,sfet2.pdf(sfet.xp),label="Estimated-2")
-    plt.xlim(22000,23500)
-    plt.xlabel("Execution Time (in ms)")
-    plt.ylabel("PDF")
-    plt.legend()
-    plt.title("Execution Time Distribution")
-    plt.savefig("comparison-prb100-cores2.pdf")
     
 # Workload,Allocation vs Distribution Tables
 def dump_pdf_table():
@@ -608,20 +633,433 @@ def get_occupied_cores(alloc,time):
             total = total + m
     return total
 
+def plot_time_division():
+    """
+        Plot the different phases 
+        in a timed systems.
+    """
+    prefix        = "/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-28"
+    for w in range(96,100):
+        for m in range(16,M-4):
+            start_time     = timeit.default_timer()
+            
+            mfile          = prefix+"/alloc_prbs-"+str(w+1)+"_cores-"+str(m+1)
+            
+            ph1v,ph2v,intrlv1,ph3v,intrlv2,ph4v,crcturbo = \
+            get_dataset_phase(mfile)
+
+            # Seprate out the phase and slot boundaries
+            ph1t   = [ph1v[i] for i in range(0,len(ph1v),16)]
+            ph1s1  = np.array([ph1t[i] for i in range(0,8000) if i%2 == 0])
+            ph1s2  = np.array([ph1t[i] for i in range(0,8000) if i%2 == 1])
+            ph2t   = [ph2v[i] for i in range(0,len(ph2v),12)]
+            ph2s1  = np.array([ph2t[i] for i in range(0,8000) if i%2 == 0])
+            ph2s2  = np.array([ph2t[i] for i in range(0,8000) if i%2 == 1])
+            i1s1   = np.array([intrlv1[i] for i in range(0,8000) if i%2 == 0])
+            i1s2   = np.array([intrlv1[i] for i in range(0,8000) if i%2 == 0])
+            ph3t   = [ph3v[i] for i in range(0,len(ph3v),24)]
+            ph3s1  = np.array([ph3t[i] for i in range(0,8000) if i%2 == 0])
+            ph3s2  = np.array([ph3t[i] for i in range(0,8000) if i%2 == 1])
+            ph4    = np.array([ph4v[i] for i in range(0,len(ph4v),24)])
+
+            sfet   = np.mean(ph1s1) + \
+                     np.mean(ph2s1) + \
+                     np.mean(i1s1) + \
+                     np.mean(ph3s1) + \
+                     np.mean(ph1s2) + \
+                     np.mean(ph2s2) + \
+                     np.mean(i1s2) + \
+                     np.mean(ph3s2) + \
+                     np.mean(intrlv2) + \
+                     np.mean(ph4) + \
+                     np.mean(crcturbo)
+
+            alloc_dist = u"ttype,start,end\n"
+
+            start = 0.0
+            end   = 0.0
+
+            # Phase1 s1
+            start = 0.0
+            end   = start + np.mean(ph1s1)/sfet
+            alloc_dist = alloc_dist + "PH1S1," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(ph2s1)/sfet
+            alloc_dist = alloc_dist + "PH2S1," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(i1s1)/sfet
+            alloc_dist = alloc_dist + "I1S1," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(ph3s1)/sfet
+            alloc_dist = alloc_dist + "PH3S1," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(ph1s2)/sfet
+            alloc_dist = alloc_dist + "PH1S2," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(ph2s2)/sfet
+            alloc_dist = alloc_dist + "PH2S2," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(i1s2)/sfet
+            alloc_dist = alloc_dist + "I1S2," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(ph3s2)/sfet
+            alloc_dist = alloc_dist + "PH3S2," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(intrlv2)/sfet
+            alloc_dist = alloc_dist + "I2," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(ph4)/sfet
+            alloc_dist = alloc_dist + "PH4," + str(start) + "," + str(end) + "\n"
+
+            start = end
+            end   = start + np.mean(crcturbo)/sfet
+            alloc_dist = alloc_dist + "CRCTURBO," + str(start) + "," + str(end) + "\n"
+
+            df = pd.read_csv(io.StringIO(alloc_dist))
+            df["diff"] = df["end"] - df["start"]
+            df.to_csv("task_test.csv")
+            # Start Printing
+            color = {"PH1S1":"black",\
+                     "PH2S1":"crimson",\
+                     "I1S1":"blue",\
+                     "PH3S1":"green",\
+                     "PH1S2":"black",\
+                     "PH2S2" : "crimson", \
+                     "I1S2":"blue",\
+                     "PH3S2":"green",\
+                     "I2" : "brown",\
+                     "PH4" : "olive",\
+                     "CRCTURBO" : "cyan",\
+                     }
+            fig,ax=plt.subplots(figsize=(8,2))
+
+            labels=[]
+            #print(df.groupby("ttype"))
+            # for i, task in enumerate(df.groupby("core")):
+            #     labels.append(task[0])
+            for r in df.groupby("ttype"):
+                #print(r)
+                data = r[1][["start", "diff"]]
+                #print(data)
+                #ax.broken_barh(data.values, (i-0.4,0.8), color=color[r[0]] )
+                # print(color[r[0]])
+                # return
+                ax.broken_barh(data.values, yrange = (0.4,0.6), color=color[r[0]] )
+
+            # ax.set_yticks(range(len(labels)))
+            # ax.set_yticklabels(labels) 
+            ax.set_xlabel("time [Normalized]")
+            ax.set_title("Execution Time Distribution")
+            plt.tight_layout()
+            plt.savefig("frac/test-prb"+str(w)+"-alloc"+str(m)+".pdf")     
+            #plt.show()
+            #else :
+            #    raise IOError("Subframe Not Yet Scheduled")
+            elapsed = timeit.default_timer() - start_time
+            print("Broken Barh computation of %d-prb and %d-core case in %f seconds " % (w+1,m,elapsed))
+
+def gen_risk_table():
+    """
+        Compute the risk of 
+        finishing the remaining computation time
+        when your at state 's' and you have 't'
+        time remaining to finish the deadline
+    """
+    prefix        = "/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-28"
+
+    W2            = range(90,101)
+    M2            = range(2,M)
+    shape         = (len(W2),len(TD),len(M2))
+
+    start_time        = timeit.default_timer()
+    risktable_waiting = np.full(shape,-1.2)
+    risktable_ph1s1   = np.full(shape,-1.2)
+    risktable_ph2s1   = np.full(shape,-1.2)
+    risktable_i1s1    = np.full(shape,-1.2)
+    risktable_ph3s1   = np.full(shape,-1.2)
+    risktable_ph1s2   = np.full(shape,-1.2)
+    risktable_ph2s2   = np.full(shape,-1.2)
+    risktable_i1s2    = np.full(shape,-1.2)
+    risktable_ph3s2   = np.full(shape,-1.2)
+    risktable_i2      = np.full(shape,-1.2)
+    risktable_ph4     = np.full(shape,-1.2)
+    #risktable_crct    = np.full(shape,-1.2)
+    elapsed = timeit.default_timer() - start_time
+    print("Finished Initializing Risk Tables in %f seconds " % (elapsed))
+
+
+    for w in W2:
+        for m in M2:
+            start_time     = timeit.default_timer()
+            
+            mfile          = prefix+"/alloc_prbs-"+str(w)+"_cores-"+str(m)
+
+            ph1s1,ph1s2,ph2s1,ph2s2,i1s1,i1s2,ph3s1,ph3s2,i2,ph4,crcturbo = \
+            get_dataset_phase_filtered(mfile)
+
+            # Done with Waiting about to start PH1S1
+            remcomp = ph1s1 + ph2s1 + \
+                      ph3s1 + i1s1  + \
+                      ph1s2 + ph2s2 + \
+                      ph3s2 + i1s2  + \
+                      i2    + ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-100
+            m2 = m-2
+            risktable_waiting[w2,:,m2] = dist.sf(TD)
+
+            # Done PH1S1
+            remcomp = ph2s1 + \
+                      ph3s1 + i1s1  + \
+                      ph1s2 + ph2s2 + \
+                      ph3s2 + i1s2  + \
+                      i2    + ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_ph1s1[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_ph1s1[w,:,m]))
+
+            # Done PH2S1
+            remcomp = \
+                      ph3s1 + i1s1  + \
+                      ph1s2 + ph2s2 + \
+                      ph3s2 + i1s2  + \
+                      i2    + ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_ph2s1[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_ph2s1[w,:,m]))
+
+            # Done I1S1
+            remcomp = \
+                      ph3s1 + \
+                      ph1s2 + ph2s2 + \
+                      ph3s2 + i1s2  + \
+                      i2    + ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_i1s1[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_i1s1[w,:,m]))
+
+            # Done PH3S1
+            remcomp = \
+                      ph1s2 + ph2s2 + \
+                      ph3s2 + i1s2  + \
+                      i2    + ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_ph3s1[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_ph3s1[w,:,m]))
+
+            # Done PH1S2
+            remcomp = ph2s2 + \
+                      ph3s2 + i1s2  + \
+                      i2    + ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_ph1s2[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_ph1s2[w,:,m]))
+
+            # Done PH2S2
+            remcomp = \
+                      ph3s2 + i1s2  + \
+                      i2    + ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_ph2s2[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_ph2s2[w,:,m]))
+
+            # Done I2S2
+            remcomp = \
+                      ph3s2 + \
+                      i2    + ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_i1s2[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_i1s2[w,:,m]))
+
+            # Done PH3S2
+            remcomp = \
+                      i2    + ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_ph3s2[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_ph3s2[w,:,m]))
+
+            # Done I2
+            remcomp = \
+                      ph4   + \
+                      crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_i2[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_i2[w,:,m]))
+
+            # Done PH4
+            remcomp = crcturbo
+            (bins2,bin_edges) = np.histogram(remcomp,bins=BINS) 
+            dist = scipy.stats.rv_histogram((bins2,bin_edges))
+            # Re-adjust the idices
+            w2 = w-90
+            m2 = m-2
+            risktable_ph4[w2,:,m2] = dist.sf(TD)
+            #print(np.mean(risktable_ph4[w,:,m]))
+            
+
+            elapsed = timeit.default_timer() - start_time
+            print("Computed Remaining Risk of %d-prb and %d-core case in %f seconds " % (w,m,elapsed))
+    
+    #print(risktable_waiting)
+    np.save("rtbl-db/rtbl_wait.npy",risktable_waiting)
+    np.save("rtbl-db/rtbl_ph1s1.npy",risktable_ph1s1)
+    np.save("rtbl-db/rtbl_ph2s1.npy",risktable_ph2s1)
+    np.save("rtbl-db/rtbl_i1s1.npy",risktable_i1s1)
+    np.save("rtbl-db/rtbl_ph3s1.npy",risktable_ph3s1)
+    np.save("rtbl-db/rtbl_ph1s2.npy",risktable_ph1s2)
+    np.save("rtbl-db/rtbl_ph2s2.npy",risktable_ph2s2)
+    np.save("rtbl-db/rtbl_i1s2.npy",risktable_i1s2)
+    np.save("rtbl-db/rtbl_ph3s2.npy",risktable_ph3s2)
+    np.save("rtbl-db/rtbl_i2.npy",risktable_i2)
+    np.save("rtbl-db/rtbl_ph4.npy",risktable_ph4)
+
+
+
+def plot_risk_surface(filem):
+    """
+        1. Plot the risk surface
+            (for 4,8 and 16) core allocations
+        2. Estimate a closed
+            form expression of risk
+            interms of w and m.
+    """
+    prb   = np.array(range(90,101,1))
+    td    = np.array(range(0,len(TD),1))
+    alloc = np.array(range(2,26,1))
+    w     = prb[0]-90      # For 90 PRBs
+
+    y     = alloc          # Y-axis is either alloc/prb
+    X,Y   = np.meshgrid(y,td,indexing='ij')
+    shape = (len(y),len(td))
+    Z     = np.full(shape,-1.0)
+    stat  = np.load(filem)
+
+    for t in td :
+        for y2 in y :
+            # Access correct index of stat
+            yidx = y2 - 2
+            tidx = t
+
+            # Access correct index of Z
+            yidx2 = y2-2
+            tidx2 = t
+            # print(widx)
+            # print(tidx)
+            # print(m)
+            Z[yidx2,tidx2] = stat[w,tidx,yidx]
+
+    #print(Z)
+    # print(stat[w,1,:]) 
+    # print(stat[w,1,:].shape)
+    #Plot
+    fig  = plt.figure(figsize=(8,6))
+    ax   = fig.gca(projection='3d')
+    surf = ax.plot_surface(X, Y/10000, Z, rstride=1, cstride=1, 
+                           cmap=cm.RdBu,linewidth=0, antialiased=False)
+    ax.set_xlabel("Cores")
+    ax.set_ylabel("Slack")
+    ax.set_zlabel("Risk")
+    ax.set_title("Risk Surface for (w = %s)"%str(w+90))
+    fig.colorbar(surf, shrink=0.5, aspect=5)
+    plt.savefig("risk-w90.pdf")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 if __name__=="__main__":
+    np.set_printoptions(precision=3)
     # x = [np.random.normal() for u in range(0,1000000)]
     # y,u = pdf(x)
     # plt.plot(u[1:],y)
     #init_workload_risk_alloc_table()
     #compute_cumulative_risk()
-    # prefix = "/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-28/alloc_prbs-90_cores-2"
+    #prefix = "/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-28/alloc_prbs-90_cores-2"
     # _,_,i1,_,i2,_,i3 = get_dataset_phase(prefix)
     # print(i1)
     #dump_pdf_table2()
     #test_etPDF()
     #testCONV()
     #print(len(BINS))
-    #test_above()
-    compare_pdfs()
+    #gen_risk_table()
+    #print(dist)
+    #plt.hist(dist,bins=BINS)
+    filem = "rtbl-db/rtbl_ph1s2.npy"
+    plot_risk_surface(filem)
+    #compare_pdfs()
+    #plot_time_division()
     print("Blah")

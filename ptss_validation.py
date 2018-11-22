@@ -339,11 +339,129 @@ def compute_correlation():
     df.to_excel(xfile,index=False)
     print(df)
     
-        
+def compare_pdfs():
+    """ 
+        Compare the estimated and 
+        actual probability distribution 
+        of the subframe execution time.
+        for w = 100 and m = 2 (total number of cores)
+
+        This is done for a particular workload
+        and allocation case.
+    """
+    # The pdfs are already computed, load them from the pdf db file
+    ph1_table = np.load("pdf-risk-db3/ph1db.npy")
+    ph2_table = np.load("pdf-risk-db3/ph2db.npy")
+    ph3_table = np.load("pdf-risk-db3/ph3db.npy")
+    ph4_table = np.load("pdf-risk-db3/ph4db.npy")
+    i1_table  = np.load("pdf-risk-db3/i1db.npy")
+    i2_table  = np.load("pdf-risk-db3/i2db.npy")
+    crc_table = np.load("pdf-risk-db3/crcdb.npy")
+    (w,m)     = (99,1) # Indices for the PDF table
+    i1        = etPDF(i1_table[w,:],BINS)
+    i2        = etPDF(i2_table[w,:],BINS)
+    crc       = etPDF(crc_table[w,:],BINS)
+
+    # Retrieve the PDFs of all the phases
+    pdf1 = etPDF(ph1_table[w,m,:],BINS)
+    pdf2 = etPDF(ph2_table[w,m,:],BINS)
+    pdf3 = etPDF(ph3_table[w,m,:],BINS)
+    pdf4 = etPDF(ph4_table[w,m,:],BINS)
+
+    # Combine the PDFs using convolution ()
+    sfet = pdf1 + pdf1 + pdf2 + pdf2 + i1 + i1 + pdf3 + pdf3 + i2 + pdf4 + crc
+
+    # Use another method to estimate the PDF
+    # --------------------------------------
+    # How is different from the previous one ?
+    # 1. I do not use the precomputed PDF tables
+    # 2. All the tasks of a phase are drawn only once. 
+    #    Basically I am more interested in the phase 
+    #    level profiling.
+    (ph1v,ph2v,intrlv1,ph3v,intrlv2,ph4v,crcturbo) = \
+    get_dataset_phase("/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-28/alloc_prbs-100_cores-2/")
+    ph1t   = [ph1v[i] for i in range(0,len(ph1v),16)]
+    ph1s1  = np.array([ph1t[i] for i in range(0,8000) if i%2 == 0])
+    ph1s2  = np.array([ph1t[i] for i in range(0,8000) if i%2 == 1])
+    ph2t   = [ph2v[i] for i in range(0,len(ph2v),12)]
+    ph2s1  = np.array([ph2t[i] for i in range(0,8000) if i%2 == 0])
+    ph2s2  = np.array([ph2t[i] for i in range(0,8000) if i%2 == 1])
+    intrlv1s1   = np.array([intrlv1[i] for i in range(0,8000) if i%2 == 0])
+    intrlv1s2   = np.array([intrlv1[i] for i in range(0,8000) if i%2 == 0])
+    ph3t   = [ph3v[i] for i in range(0,len(ph3v),24)]
+    ph3s1  = np.array([ph3t[i] for i in range(0,8000) if i%2 == 0])
+    ph3s2  = np.array([ph3t[i] for i in range(0,8000) if i%2 == 1])
+    ph4    = np.array([ph4v[i] for i in range(0,len(ph4v),24)])
+
+    ph1s1_pdf,_ = np.histogram(ph1s1,bins=BINS,density=True)
+    ph1s2_pdf,_ = np.histogram(ph1s2,bins=BINS,density=True)
+    ph2s1_pdf,_ = np.histogram(ph2s1,bins=BINS,density=True)
+    ph2s2_pdf,_ = np.histogram(ph2s2,bins=BINS,density=True)
+    i1s1_pdf,_  = np.histogram(intrlv1s1,bins=BINS,density=True)
+    i1s2_pdf,_  = np.histogram(intrlv1s2,bins=BINS,density=True)
+    ph3s1_pdf,_ = np.histogram(ph3s1,bins=BINS,density=True)
+    ph3s2_pdf,_ = np.histogram(ph3s2,bins=BINS,density=True)
+    i2_pdf,_    = np.histogram(intrlv2,bins=BINS,density=True)
+    ph4_pdf,_   = np.histogram(ph4,bins=BINS,density=True)
+    crc_pdf,_   = np.histogram(crcturbo,bins=BINS,density=True)
+
+    ph1s1pdf    = etPDF(ph1s1_pdf,BINS)
+    ph1s2pdf    = etPDF(ph1s2_pdf,BINS)
+    ph2s1pdf    = etPDF(ph2s1_pdf,BINS)
+    ph2s2pdf    = etPDF(ph2s2_pdf,BINS)
+    i1s1pdf     = etPDF(i1s1_pdf,BINS)
+    i1s2pdf     = etPDF(i1s2_pdf,BINS)
+    ph3s1pdf    = etPDF(ph3s1_pdf,BINS)
+    ph3s2pdf    = etPDF(ph3s2_pdf,BINS)
+    i2pdf       = etPDF(i2_pdf,BINS)
+    ph4pdf      = etPDF(ph4_pdf,BINS)
+    crcpdf      = etPDF(crc_pdf,BINS)
+
+    sfet2       = ph1s1pdf + ph1s2pdf + ph2s1pdf + ph2s2pdf + i1s1pdf + i1s2pdf + ph3s1pdf + ph3s2pdf + i2pdf + ph4pdf + crcpdf
+
+    # File
+    pf1   = "/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-28/alloc_prbs-100_cores-2/dataset_sf.csv"
+    pf2   = "/home/amaity/Desktop/Datasets/ptss-raw-execution-data/ecolab-knl-2018-10-19/alloc_prbs-100_cores-2/dataset_sf.csv"
+    vals1 = pd.read_csv(pf1)
+    vals2 = pd.read_csv(pf2)
+    tmp1  = (vals1["ExecutionTime"].values)*1000
+    tmp2  = (vals2["ExecutionTime"].values)*1000
+    plt.hist(tmp1,bins=len(BINS),density=True,label="Oct-28")
+    plt.hist(tmp2,bins=len(BINS),density=True,label="Oct-19")
+
+    # Plot the estimated
+    plt.plot(sfet.xp,sfet.pdf(sfet.xp),label="Estimated")
+    plt.plot(sfet2.xp,sfet2.pdf(sfet.xp),label="Estimated-2")
+    plt.xlim(22000,23500)
+    plt.xlabel("Execution Time (in ms)")
+    plt.ylabel("PDF")
+    plt.legend()
+    plt.title("Execution Time Distribution")
+    plt.savefig("comparison-prb100-cores2.pdf")
+
+def expansion_study_comp_phases():
+    """
+        Plot Histogram for the phases
+    """
+    prefixf  = "Validation-Datasets/alloc_prbs-90_cores-16"
+    prefixf2 = "Validation-Datasets/alloc_prbs-90_cores-8-16-20-24"
+    #prefixf2 = "Validation-Datasets/alloc_prbs-90_cores-16-16-16-16"
+    (ph1v,ph2v1,intrlv1,ph3v,intrlv2,ph4v,crcturbo)       = ptsl.get_dataset_phase(prefixf)
+    (ph1v2,ph2v2,intrlv12,ph3v2,intrlv22,ph4v2,crcturbo2) = ptsl.get_dataset_phase(prefixf2)
+    plt.hist(ph2v1,bins=ptsl.BINS,density=True,label="Without Expansion")
+    plt.hist(ph2v2,bins=ptsl.BINS,density=True,label="With Expansion")
+    plt.legend()
+    plt.xlim(300,1250)
+    plt.xlabel("Execution Time (in us)")
+    plt.ylabel("Probability Density")
+    plt.savefig("Expansion-Penalty.pdf")
+    print(str(np.mean(ph2v1))+","+str(np.mean(ph2v2)))
+     
 if __name__=="__main__":
     #compute_correlation()
     #compute_pdf_distance_v2()
-    plot_err("pdf-discrepancy-mean.npy","mean")
-    plot_err("pdf-discrepancy-std.npy","std")
+    #plot_err("pdf-discrepancy-mean.npy","mean")
+    #plot_err("pdf-discrepancy-std.npy","std")
     #expansion_pdf_comp()
     #expansion_pdf_comp()
+    expansion_study_comp_phases()
