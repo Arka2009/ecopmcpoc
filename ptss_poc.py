@@ -2,8 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Oct 16 11:04:59 2018
-
 @author: amaity
+
+A quick and dirty python Proof of
+concept for risk based scheduling
+as proposed.
 """
 
 import os
@@ -16,18 +19,6 @@ from enum import Enum
 import heapq
 import queue
 import timeit
-
-ph1_table = np.load("analyses/ph1db.npy")
-ph2_table = np.load("analyses/ph2db.npy")
-ph3_table = np.load("analyses/ph3db.npy")
-ph4_table = np.load("analyses/ph4db.npy")
-waiting_remcomp_db = np.load("analyses/ph1231234db_cum.npy")
-ph1s1_remcomp_db = np.load("analyses/ph231234db_cum.npy")
-ph2s1_remcomp_db = np.load("analyses/ph31234db_cum.npy")
-ph3s1_remcomp_db = np.load("analyses/ph1234db_cum.npy")
-ph1s2_remcomp_db = np.load("analyses/ph234db_cum.npy")
-ph2s2_rempcom_db = np.load("analyses/ph34db_cum.npy")
-ph3s2_remcomp_db = np.load("analyses/ph4db_cum.npy")
 
 def dummy_ue(subframeId,dmr3,criticality):
     """ 
@@ -45,45 +36,95 @@ def dummy_ue(subframeId,dmr3,criticality):
         dmr           = dmr3
     else :
         raise IOError("unsupported Criticality")
-    layers        = 4
+    #layers        = 4
     deadline      = ptsl.D
     arrival_time  = (subframeId)*(ptsl.T)
-    ue            = UE(crnti,subframeId,arrival_time,deadline,prbs,layers,dmr)
-    #subframeId    = subframeId + 1
-    #print(ue)
+    ue            = UE(crnti,subframeId,arrival_time,deadline,prbs,dmr)
     return ue
+
+def get_max_core(ph):
+    """
+     Max Core Allocations in Each Phase (ph)
+    """
+    core = [0,16,12,24,32,48]
+    if ph == 0:
+        return 0
+    return core[ph]
+
+def get_et_dist(ph,w,m):
+    """
+        Obtain the et distribution
+        of a phase
+
+        INPUT
+        ---------------------
+        1. current phase (ph)
+        2. workload (w)
+        3. number of cores (m)
+
+        OUTPUT
+        ---------------------
+        1. mean (mu)
+        2. variance (sigma^2)
+
+        It is assumed that the distribution
+        is normal.
+    """
+    N = get_max_core(ph)
+    A = np.array([[1,1],[100/N,1]])
+    B = np.array([N*ptsl.D/(ptsl.NPH*ptsl.W),ptsl.D/ptsl.NPH])
+    C = np.matmul(np.linalg.inv(A),B)
+
+    #print(C)
+    k1,c = C
+
+   
+    mu    = k1*(w/m) + c
+    sigma = (10/100)*mu     # 10% of the mu
+    # print("k1:%d,c:%d,w:%d,m:%d,mu:%f"%(k1,c,w,m,mu))
+    
+    # Visualize
+    # dist  = stats.norm(loc=mu,scale=sigma)
+    # x = dist.rvs(10000)
+    # print(np.min(x))
+    # print(np.max(x))
+    # plt.hist(x,bins=2000,label="w:%d,m:%d"%(w,m))
+    # plt.legend()
+
+    # Return
+    return (mu,sigma**2)
+
 
 class UE(object):
     def __init__(self,\
                  crnti,\
                  subframe,\
                  arrival_time,\
-                 deadline,\
+                 rd,\
                  prbs,\
-                 layers,\
                  dmr):
         assert (dmr < 1),"DMR cannot be more than 1"
         self.crnti    = crnti                   # UE Connection ID, constant accross a connection
         self.subframe = subframe                # Subframe ID
 
         # Timing Information
-        self.alloc    = 0                         # The number of allocated cores
-        self.state    = UEExecState.WAITING       # The different states of execution
+        self.alloc    = 0                         # The number of allocated cores, (-1 denotes that the UE is dropped)
+        self.state    = 0                         # Number of phases completed
         self.dmr      = dmr                       # Probability of Missing the deadline (Pr{R > D}), may not be used in first version
         self.risk     = dmr                       # Risk of missing the deadline
-        self.arrival  = arrival_time              # Arrival Time
-        self.deadline = arrival_time + deadline   # UE Latency Deadline (Absolute)
-        self.ticks    = arrival_time              # Elapsed Time (Absolute), but not yet dropped
-        self.start    = arrival_time              # Start Time (Absolute)
-        self.finish   = arrival_time              # Finish/Drop Time (Absolute)
+        self.arrival  = arrival_time              # (Absolute) Arrival Time
+        self.deadline = arrival_time + rd         # (Absolute) UE Latency Deadline 
+        self.ticks    = arrival_time              # (Absolute) Elapsed Time, not yet dropped/finished
+        self.start    = arrival_time              # (Absolute) Start Time
+        self.finish   = arrival_time              # (Absolute) Finish/Drop Time
 
         # Add workload information
-        self.prbs     = prbs
-        self.layers   = layers                            
+        self.prbs     = prbs                      # Synonymous with workload                
     
     def execute(self,num_cores):
         """ 
-            Execute a phase with allocation = num_cores,
+            Execute a phase/state with allocation = num_cores,
+            No preemption while exection of a phase
             
             Return Value
             ------------
@@ -94,247 +135,102 @@ class UE(object):
             2. Changes the UEExcutionState 
             3. Update the ticks to reflect the time spent in the system
         """
+        #print(self)
         if (num_cores > self.alloc) :
             self.alloc = num_cores      # Only used for debugging puposes
-        #print("Entering in state = %s, ticks = %f" % (self.state.name,self.ticks))
-        if(self.state == UEExecState.DROPPED or self.state == UEExecState.FINISHED) :
-            print("Hey the UE{%d,%d} is already FINISHED/DROPPED, still want to executed "%(self.subframe,self.crnti))
+        if(self.state == ptsl.NPH or self.state == -1) :
+            print("UE{%d,%d} is already FINISHED/DROPPED, still want to executed "%(self.subframe,self.crnti))
             return (self.ticks,self.ticks)
         else :
             if (num_cores <= 0): # No cores allocated
                 start      = self.ticks
-                self.ticks = self.ticks + 20 # Increment by 20us
+                self.ticks = self.ticks + 2 # Increment by 2.
                 finish     = self.ticks
 
-                #print("No cores allocate for UE{%d,%d} during this phase-%s during [%d,%d]"\
-                #%(self.subframe,self.crnti,self.state.name,start,finish))
                 return (start,finish)
             else :
-                start                     = self.ticks
+                start      = self.ticks
                 
                 # Capture the UE start time
-                if (self.state == UEExecState.WAITING) :
+                if (self.state == 0) :
                     self.start = start
+    
+                mu,var     = get_et_dist(self.state+1,self.prbs,num_cores)
+                dist       = stats.norm(loc=mu,scale=np.sqrt(var))
+                exec_time  = dist.rvs(1)[0]
                 
-                # Compute the execution time
-                bins      = list(range(0,12000))
-                # First obtain the appropriate distribution
-                if (self.state == UEExecState.WAITING or self.state == UEExecState.PH3S1) :
-                    pdf           = ph1_table[self.prbs,num_cores,:]
-                    xp, cdf       = ptsl.cdf2(pdf,bins)     
-                
-                if (self.state == UEExecState.PH1S1 or self.state == UEExecState.PH1S2) :
-                    pdf = ph2_table[self.prbs,num_cores,:]
-                    xp, cdf       = ptsl.cdf2(pdf,bins)
-                
-                if (self.state == UEExecState.PH2S1 or self.state == UEExecState.PH2S2) :
-                    pdf = ph3_table[self.prbs,num_cores,:]
-                    xp, cdf       = ptsl.cdf2(pdf,bins)
-                
-                if (self.state == UEExecState.PH3S2) :
-                    pdf = ph4_table[self.prbs,num_cores,:]
-                    xp, cdf       = ptsl.cdf2(pdf,bins)
-                
-                # Draw a random sample from the above distribution
-                exec_time         = ptsl.inv_transform_sampling(cdf,xp[1:])
-
                 # Compute the slack and decide if the UE needs to be dropped
                 slack                     = self.deadline - (start + exec_time)
                 if (slack < 0):
-                    self.state            = UEExecState.DROPPED
-                    self.ticks            = self.deadline
+                    self.state   = -1
+                    self.ticks   = self.deadline
                 else :
-                    self.state            = next_state(self.state)
-                    self.ticks            = self.ticks + exec_time
+                    self.state   = self.state + 1
+                    self.ticks   = self.ticks + exec_time
                 
-                finish                    = self.ticks
+                finish           = self.ticks
                 
                 # Capture the UE Finish Time
-                if(self.state == UEExecState.DROPPED or self.state == UEExecState.FINISHED):
-                    self.finish = finish
-
-                return (start,finish)
-
-    def execute2(self,num_cores):
-        """ 
-            Dummy execute method only for testing
-        """
-        #print("Entering in state = %s, ticks = %f" % (self.state.name,self.ticks))
-        if(self.state == UEExecState.DROPPED or self.state == UEExecState.FINISHED) :
-            print("Hey the UE{%d,%d} is already FINISHED/DROPPED, still want to executed "%(self.subframe,self.crnti))
-            return (self.ticks,self.ticks)
-        else :
-            if (num_cores <= 0): # No cores allocated
-                self.state = UEExecState.WAITING
-                start      = self.ticks
-                self.ticks = self.ticks + 0.05
-                finish     = self.ticks
-
-                #print("No cores allocate for UE{%d,%d} during this phase-%s during [%d,%d]"\
-                #%(self.subframe,self.crnti,self.state.name,start,finish))
-                return (start,finish)
-            else :
-                start             = self.ticks
-                exec_time         = 100
-
-                # Compute the slack and decide if the UE needs to be dropped
-                slack                     = self.deadline - (start + exec_time)
-                if (slack <= 0):
-                    self.state            = UEExecState.DROPPED
-                    self.ticks            = self.deadline
-                else :
-                    self.state            = next_state(self.state)
-                    self.ticks            = self.ticks + exec_time
-                
-                finish                    = self.ticks
-                
-                # Capture the UE Finish Time
-                if(self.state == UEExecState.DROPPED or self.state == UEExecState.FINISHED):
+                if(self.state == ptsl.NPH or self.state == -1):
                     self.finish = finish
 
                 return (start,finish)
 
     def get_demand(self):
-        """ Make it more fancy """
+        """ 
+            Make a demand for the number of cores
+            for your next phase.
+        """
+        # No demands when phase 
+        if (self.state == ptsl.NPH or self.state == -1):
+            print("No demands: Finished")
+            return 0
+        
         # Compute the PDF of remaining execution time
-        
-        slack  = self.deadline - self.ticks
-        w      = self.prbs
-        dmrexp = self.dmr
-        risk_vs_alloc = [1.0]
+        slack         = self.deadline - self.ticks
+        w             = self.prbs
+        dmrexp        = self.dmr
+        risk_vs_alloc = []
+        rem_states    = range(1+self.state,ptsl.NPH+1)
+        mu            = 0
+        var           = 0
 
-        if(self.state == UEExecState.WAITING):
-            for c in range(1,ptsl.M) :
-                xp   = range(0,83987)
-                Fp   = waiting_remcomp_db[w,c,:]
-                risk = (1-np.interp(slack,xp,Fp))
-                risk_vs_alloc.append(risk)
+        for m in range(1,ptsl.M) :
+            mu  = 0
+            var = 0
+            for s in rem_states :
+                t1, t2    = get_et_dist(s,w,m)
+                mu        = mu  + t1
+                var       = var + t2
             
-            # TODO : Is there a more *elegant* way of this
-            try :
-                demanded_cores = np.min(np.where(np.array(risk_vs_alloc) <= dmrexp))
-            except ValueError:
-                demanded_cores = 0
+            # Obtain the distribution
+            dist = stats.norm(loc=mu,scale=np.sqrt(var))
+            risk = dist.sf(slack)
+            risk_vs_alloc.append(risk)
+
+        norisk_array,   = np.where(np.array(risk_vs_alloc) <= dmrexp)
+        if (np.size(norisk_array) == 0):
+            demanded_cores = get_max_core(1+self.state)
+        else :
+            demanded_cores = norisk_array[0]
             
-            return demanded_cores
-
-
-        if(self.state == UEExecState.PH1S1):
-            for c in range(1,ptsl.M) :
-                xp   = range(0,71989)
-                Fp   = ph1s1_remcomp_db[w,c,:]
-                risk = (1-np.interp(slack,xp,Fp))
-                risk_vs_alloc.append(risk)
-            
-            # TODO : Is there a more *elegant* way of this
-            try :
-                demanded_cores = np.min(np.where(np.array(risk_vs_alloc) <= dmrexp))
-            except ValueError:
-                demanded_cores = 0
-            return demanded_cores
-        
-        elif(self.state == UEExecState.PH2S1):
-            for c in range(1,ptsl.M) :
-                xp   = range(0,59991)
-                Fp   = ph2s1_remcomp_db[w,c,:]
-                risk = (1-np.interp(slack,xp,Fp))
-                risk_vs_alloc.append(risk)
-                
-            # TODO : Is there a more *elegant* way of this
-            try :
-                demanded_cores = np.min(np.where(np.array(risk_vs_alloc) <= dmrexp))
-            except ValueError:
-                demanded_cores = 0
-            return demanded_cores
-        
-        elif(self.state == UEExecState.PH3S1):
-            for c in range(1,ptsl.M) :
-                xp   = range(0,47993)
-                Fp   = ph3s1_remcomp_db[w,c,:]
-                risk = (1-np.interp(slack,xp,Fp))
-                risk_vs_alloc.append(risk)
-            
-            # TODO : Is there a more *elegant* way of this
-            try :
-                demanded_cores = np.min(np.where(np.array(risk_vs_alloc) <= dmrexp))
-            except ValueError:
-                demanded_cores = 0
-            return demanded_cores
-        
-
-        elif(self.state == UEExecState.PH1S2):
-            for c in range(1,ptsl.M) :
-                xp   = range(0,35995)
-                Fp   = ph1s2_remcomp_db[w,c,:]
-                risk = (1-np.interp(slack,xp,Fp))
-                risk_vs_alloc.append(risk)
-            
-            # TODO : Is there a more *elegant* way of this
-            try :
-                demanded_cores = np.min(np.where(np.array(risk_vs_alloc) <= dmrexp))
-            except ValueError:
-                demanded_cores = 0
-            return demanded_cores
-        
-
-        elif(self.state == UEExecState.PH2S2):
-            for c in range(1,ptsl.M) :
-                xp   = range(0,23997)
-                Fp   = ph2s2_rempcom_db[w,c,:]
-                risk = (1-np.interp(slack,xp,Fp))
-                risk_vs_alloc.append(risk)
-                
-            # TODO : Is there a more *elegant* way of this
-            try :
-                demanded_cores = np.min(np.where(np.array(risk_vs_alloc) <= dmrexp))
-            except ValueError:
-                demanded_cores = 0
-            return demanded_cores
-        
-        elif(self.state == UEExecState.PH3S2):
-            for c in range(1,ptsl.M) :
-                xp   = range(0,11999)
-                Fp   = ph3s2_remcomp_db[w,c,:]
-                risk = (1-np.interp(slack,xp,Fp))
-                risk_vs_alloc.append(risk)
-                
-            # TODO : Is there a more *elegant* way of this
-            try :
-                demanded_cores = np.min(np.where(np.array(risk_vs_alloc) <= dmrexp))
-            except ValueError:
-                demanded_cores = 0
-            return demanded_cores
-        
-        else : 
-            raise IOError("Illegal Execution State")
-
-    def get_demand2(self):
-        """ Dummy demand only for testing """
-        return 2
-
-    def grab(self,num_cores):
-        """ Grab some cores """
-        return 0
+        # Display and Debug
+        # print(demanded_cores)
+        # print("\n\n")
+        # print("\n\n")
+        # plt.legend()
+        # plt.savefig("rem-%d.pdf"%self.state)
+        # plt.close()
+        return demanded_cores
     
-    def release(self,num_cores):
-        """ Release some core """
-        return 0
-    
-    def update_alloc(self,num_cores):
-        return 0
-    
-    def publish_state(self):
-        #return (self.state,self.risk,self.alloc,self.ticks)
-        return self.state
+    def get_curr_tick(self):
+        return self.ticks
 
-    def update_ticks(self,add2):
-        self.ticks = self.ticks + add2
-    
     def __str__(self):
         """ Display/Visaualization Method for Each UE """
-        return "id:{sf:%d,crnti:%d},workload:{prbs:%d,layer:%d},timing:{arrival:%d,deadline:%f,DMR:%f,start:%f,ticks:%f,finish:%f},FState:%s,Cores:%s" % \
-        (self.subframe,self.crnti,self.prbs,self.layers,self.arrival,\
-        self.deadline,self.dmr,self.start,self.ticks,self.finish,self.state.name,self.alloc)
+        return "id:{sf:%d,crnti:%d},workload:{prbs:%d},timing:{arrival:%d,deadline:%f,DMR:%f,start:%f,ticks:%f,finish:%f},FState:%d,Cores:%s" % \
+        (self.subframe,self.crnti,self.prbs,self.arrival,\
+        self.deadline,self.dmr,self.start,self.ticks,self.finish,self.state,self.alloc)
     
     # Comparable interface needed for sort/priority queue routines
     def __lt__(self,other):
@@ -367,94 +263,97 @@ class UE(object):
         else :
             return (self.ticks >= other.ticks)
 
+    # def update_dmr(observed_dmr):
+    #     """
+    #         Dynamically change the DMR
+    #     """
+
 def execute_1_ue(dmr):
     """ Main Execution program """
-    # Load the pdf tables for all (workload,allocation)
-    # Combination
-    #(ph1tbl,ph2tbl,ph3tbl,ph4tbl) = ptsl.load_risk_alloc_table()
-    
 
-    num_subframes = 2
-    ue_list1 = []#[dummy_ue(i,dmr,"Hard") for i in range(0,num_subframes)]
-    ue_list2 = [dummy_ue(i,dmr,"Soft") for i in range(0,num_subframes)]
+    # Generate a list of inputs 
+    num_subframes = 20
+    ue_list1 = [dummy_ue(i,dmr,"Hard") for i in range(0,num_subframes)]
+    ue_list2 = [] #[dummy_ue(i,dmr,"Soft") for i in range(0,num_subframes)]
     ue_list  = ue_list1 + ue_list2
-    numT    = num_subframes
     heapq.heapify(ue_list)
 
-    s                    = 0
-    f                    = 0
-    #allocinfo_q = queue.Queue(1000000)            # Store (start,end,occupied cores)
-    alloc_stats = []
-    ue_stats    = []                              # Store the UE info
+    # Initialize the state variables
+    NZ          = 1000000
+    print(len(ue_list)*ptsl.NPH)
+    s           = np.zeros(NZ) # Start of n-th phase (irrespective of the UE/SF)
+    f           = np.zeros(NZ) # Finish of the n-th phase
+    m           = np.zeros(NZ) # Available cores at the beginning of n-th phase
+    m[0]        = ptsl.M
+    d           = np.zeros(NZ) # demanded cores for the n-th phase
+    a           = np.zeros(NZ) # Allocated cores
+    infq        = queue.Queue(maxsize=0) # Stores the number of computations that are inflight
+
+    start_time  = timeit.default_timer()
+    missed      = 0
+    n           = 0   # The n-th phase
     while len(ue_list) > 0:
-        start_time     = timeit.default_timer()
         ue = heapq.heappop(ue_list)
-        
-        # Free up the previously allocated cores if you start at a later time, TODO : There are some bugs in the logic rectify
-#        (s,e,m)              = (0,0,0)               # (start,end,occupied cores)
-#        total_utilized_cores = 0
-#        while (ue.ticks > e) and (not allocinfo_q.empty()) :
-#            s,e,m = (allocinfo_q.queue)[0]
-#            allocinfo_q.get()
-#            total_utilized_cores = total_utilized_cores - m
-#            alloc_stats.append((s,e,m))
-#        # How many cores are active furthermore
-#        for s,e,m in allocinfo_q.queue:
-#            total_utilized_cores = total_utilized_cores + m
-#        print("Total active cores = %d at time = %f\n" % (total_utilized_cores,ue.ticks))
-        
-            
+
         # Execute
-        demanded_cores = ue.get_demand()
-        curr_alloc     = demanded_cores            # TODO : Update the policy if there are lesser number of cores
-        s,f            = ue.execute(curr_alloc)
-        if (ue.state == UEExecState.FINISHED or ue.state == UEExecState.DROPPED):
-            ue_stats.append(ue)
+        #print(ue)
+        d[n] = ue.get_demand()
+        s[n] = ue.get_curr_tick()
+
+        m[n] = ptsl.M
+        num_inflight = infq.qsize()
+        
+        # Compute the number of inflight instructions
+        while num_inflight > 0:
+            f2,a2 = infq.get(block=False)
+            if (s[n] <= f2) :
+                m[n] = m[n] - a2   # Decrement the number of available cores
+                infq.put((f2,a2))
+            num_inflight = num_inflight-1
+        
+        #print("a[n]=%d"%np.min([d[n],m[n]]))
+            
+        # Cap the number of demanded cores to the total available
+        a[n] = np.min([d[n],m[n]])
+        _,f[n]  = ue.execute(a[n])
+        infq.put((f[n],a[n])) # Enque the (potentially) inflight computation
+
+
+        # Store it back or discard it.
+        if (ue.state == ptsl.NPH or ue.state == -1):
+            if (ue.state == -1):
+                missed = missed + 1
+            print(ue)
         else :
             heapq.heappush(ue_list,ue)
     
-        # Store the allocation information
-        #allocinfo_q.put((s,f,prev_alloc))
-        alloc_stats.append((s,f,curr_alloc))
-
-        elapsed = timeit.default_timer() - start_time
-        if(ue.state == UEExecState.DROPPED or ue.state == UEExecState.FINISHED):
-            print(ue)
-            #print("Simulation Time : %f s\n\n"%elapsed)
+        #print("m[%d]:%d,d[%d]:%d,a[%d]:%d"%(n,m[n],n,d[n],n,a[n]))
+        #print("s[%d]:%d,f[%d]:%d"%(n,s[n],n,f[n]))
+        n = n+1
     
-    # Drain the allocinfo_q
-#    while not allocinfo_q.empty():
-#        s,e,m = allocinfo_q.get()
-#        alloc_stats.append((s,e,m))
+    elapsed = timeit.default_timer() - start_time
+    print("\n\nSimulation Time : %fs,DMR(observed) : %f"%(elapsed,missed/num_subframes))
+    return (s,m,n)
 
-    return (ue_stats,alloc_stats,numT)
-
-
-def test_inverse_sampling():
-    pdf       = ph1_table[3,2,:]
-    bins      = list(range(0,12000))
-    xp, cdf       = ptsl.cdf2(pdf,bins)
-    print(ptsl.inv_transform_sampling(cdf,xp[1:]))
   
 def main_test():
-    ue_stats,alloc_stats,total_time_steps = execute_1_ue(0.3)
-    numT = np.array(list(range(0,((total_time_steps-1)*(ptsl.T))+ptsl.D,2)))
-    m    = []
-    for t in numT :
-        m.append(ptsl.get_occupied_cores(alloc_stats,t))
+    s,m,n = execute_1_ue(0.3)
+    # numT = np.array(list(range(0,((total_time_steps-1)*(ptsl.T))+ptsl.D,2)))
+    # m    = []
+    # for t in numT :
+    #     m.append(ptsl.get_occupied_cores(alloc_stats,t))
         
-    #print(numT)
-    #print(m)
-    max_demand = np.max(m)
-    plt.plot(numT/1000.0,m,label="Maximum Demand "+str(max_demand))
-    plt.xlabel("Time (ms)")
-    plt.ylabel("Total Demanded Cores")
-    plt.title("Core Demand Profile (To meet the DMR)")
+    # print(s)
+    # print(m)
+    max_demand = ptsl.M - np.min(m)
+    plt.plot(s[0:n],m[0:n],label="Maximum Demand : %d"%max_demand)
+    plt.xlabel("Time")
+    plt.ylabel("Available Cores")
+    plt.title("Resource Usage Profile (To meet the DMR)")
     plt.legend()
-    plt.savefig("core-demand-profile.pdf")
-    
-#    for s,e,m in alloc_stats:
-#        print("%f\t%f\t%f"%(s,e,m))
+    plt.savefig("rusage-profile.pdf")
+
         
 if __name__=="__main__":
     main_test()
+    #get_et_dist(3,1,1)

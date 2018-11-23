@@ -18,11 +18,12 @@ from enum import Enum
 
 # Global Constants
 NUMBINS   = 2000                    # Used Internally by CDF and PDFs functions
-T         = 1000                    # In us
+T         = 1000                    # Unit unspecified
 D         = 2500                    # Deadline
-M         = 26                      # Total number of Cores available in the system
+M         = 64                     # Total number of Cores available in the system
 W         = 100                     # Total number of PRBs 
 TD        = np.arange(0,D,0.1)      # Discretized Time Steps
+NPH       = 5                       # Total number of phaes (assumed to be same for all the UE)
 
 ##(Check 16000/12000/10000)
 DELTA     = 1.0                         # Execution Time Granularity (1us)
