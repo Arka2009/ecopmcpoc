@@ -215,9 +215,25 @@ def plot_hist(ph):
     plt.savefig(fl2+"/et-sf"+str(ph)+".pdf")
     plt.close()
 
+def plot_interference():
+    phx1 = pd.read_csv("/home/amaity/Dropbox/NUS-Datasets/ptss-poc/lace_case24/dataset_ph1.csv")
+    phx2 = pd.read_csv("/home/amaity/Dropbox/NUS-Datasets/ptss-poc/lace_case24/dataset_ph2.csv")
+    phx3 = pd.read_csv("/home/amaity/Dropbox/NUS-Datasets/ptss-poc/lace_case24/dataset_ph5.csv")
+    t1   = (phx1['time'].values)*1000.0
+    t2   = np.append(t1,(phx2['time'].values)*1000.0)
+    t3   = (phx3['time'].values)*1000.0
+    plt.hist(t2,bins=1000,density=True,label="Isolated(mean:%04.2f,std:%04.2f)"%(np.mean(t2),np.std(t2)),color="green")
+    plt.hist(t3,bins=1000,density=True,label="Interfered(mean:%04.2f,std:%04.2f)"%(np.mean(t3),np.std(t3)),color="red")
+    plt.legend()
+    plt.xlim(47,55)
+    plt.title("Interference Study")
+    plt.xlabel("Execution Time (in ms)")
+    plt.ylabel("Probability Distribution")
+    plt.savefig("/home/amaity/Dropbox/NUS-Datasets/ptss-poc/lace_case24/tmp.pdf")
 
 
 if __name__=="__main__":
     #plot_ph_dist()
     #plot_freq_effects()
-    plot_hist(1)
+    #plot_hist(1)
+    plot_interference()
