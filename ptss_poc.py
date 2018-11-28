@@ -259,16 +259,16 @@ def execute_1_ue(ns,constrain=False,expshrink=False):
     """ Main Execution program """
 
     # Generate a list of input
-    dmr = 0.25 
+    dmr = 0.1 
     num_subframes = ns
     crnti1 = 2386
     crnti2 = 9983
     crnti3 = 9128
     crnti4 = 4451
     ue_list1 = [dummy_ue(i,dmr,crnti1) for i in range(0,num_subframes)]
-    ue_list2 = [dummy_ue(i,dmr,crnti2) for i in range(0,num_subframes)]
-    ue_list3 = [dummy_ue(i,dmr,crnti3) for i in range(0,num_subframes)]
-    ue_list4 = [dummy_ue(i,dmr,crnti4) for i in range(0,num_subframes)]
+    ue_list2 = [] #[dummy_ue(i,dmr,crnti2) for i in range(0,num_subframes)]
+    ue_list3 = [] #[dummy_ue(i,dmr,crnti3) for i in range(0,num_subframes)]
+    ue_list4 = [] #[dummy_ue(i,dmr,crnti4) for i in range(0,num_subframes)]
     
     ue_list  = ue_list1 + ue_list2 + ue_list3 + ue_list4
     heapq.heapify(ue_list)
@@ -371,14 +371,19 @@ def execute_1_ue(ns,constrain=False,expshrink=False):
     print("Simulation Time : %fs,DMR-App2(observed) : %f"%(elapsed,missed2/num_subframes))
     print("Simulation Time : %fs,DMR-App3(observed) : %f"%(elapsed,missed3/num_subframes))
     print("Simulation Time : %fs,DMR-App4(observed) : %f"%(elapsed,missed4/num_subframes))
-    return (s,m,n)
+    return (s,f,m,n)
 
   
 def main_test():
-    NS   = 5000
-    s,m,n = execute_1_ue(NS,constrain=True,expshrink=True)
+    NS   = 500
+    s,f,m,n = execute_1_ue(NS,constrain=False,expshrink=True)
     max_demand = np.max(m)
-    avg_demand = np.mean(m)
+    sum2 = 0
+    for t,_ in enumerate(s):
+        delt = f[t] - s[t]
+        sum2 = sum2 + delt*m[t]
+    avg_demand = sum2/(f[n-1]-s[0])  
+    #print(m)
     plt.plot(s[0:n],m[0:n],label="Demand (Max:%d,Avg:%f)"%(max_demand,avg_demand))
     plt.xlabel("Time")
     plt.ylabel("Available Cores")
