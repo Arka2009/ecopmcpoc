@@ -8,35 +8,23 @@ A quick and dirty python Proof of
 concept for risk based scheduling
 as proposed.
 """
-
-import os
 import numpy as np
 import matplotlib.pyplot as plt
-import pandas as pd
 from scipy import stats
 import ptss_utils as ptsl
-from enum import Enum
+import ptss_synthpdf as psyn
 import heapq
 import queue
 import timeit
 
-def dummy_ue(subframeId,dmr3,criticality):
+def dummy_ue(subframeId,dmr3,crnti):
     """ 
         Generate a random UE,
-        criticality = 'Hard' or
-        criticality = 'Soft'
+        with a given DMR requirement
     """
-    if criticality == "Hard" :
-        crnti         = 2308
-        prbs          = 15 #np.random.random_integers(15,20)
-        dmr           = 0.01
-    elif criticality == "Soft" :
-        crnti         = 9987
-        prbs          = 32 #np.random.random_integers(75,80)
-        dmr           = dmr3
-    else :
-        raise IOError("unsupported Criticality")
-    #layers        = 4
+    #crnti = np.random.randint(low=2300,high=10000)
+    prbs  = 32
+    dmr   = dmr3
     deadline      = ptsl.D
     arrival_time  = (subframeId)*(ptsl.T)
     ue            = UE(crnti,subframeId,arrival_time,deadline,prbs,dmr)
@@ -51,7 +39,7 @@ def get_max_core(ph):
         return 0
     return core[ph]
 
-def get_et_dist(ph,w,m,dump=False):
+def get_et_dist(ph,w,m,marray,varray):
     """
         Obtain the et distribution
         of a phase
@@ -73,26 +61,10 @@ def get_et_dist(ph,w,m,dump=False):
 
         Please modify this distribution (with positive support)
     """
-    N = get_max_core(ph)
-    A = np.array([[1,1],[100/N,1]])
-    B = np.array([N*ptsl.D/(ptsl.NPH*ptsl.W),ptsl.D/ptsl.NPH])
-    C = np.matmul(np.linalg.inv(A),B)
-
-    k1,c = C
-
-    # Evaluate mu and sigma
-    mu    = k1*(w/m) + c
-    sigma = (0.1/100)*(k1*(100/ptsl.M) + c)     # 10% of the mu
-    
-    # Visualize
-    if dump :
-        dist  = stats.norm(loc=mu,scale=sigma)
-        x = dist.rvs(10000)
-        plt.hist(x,bins=2000,label="w:%d,m:%d"%(w,m))
-        plt.legend()
-
-    # Return
-    return (mu,sigma**2)
+    # print("get_et_dist-start")
+    # print(m)
+    # print("get_et_dist-stop")
+    return (marray[m-1],varray[m-1])
 
 
 class UE(object):
@@ -121,7 +93,7 @@ class UE(object):
         # Add workload information
         self.prbs     = prbs                      # Synonymous with workload                
     
-    def execute(self,num_cores):
+    def execute(self,num_cores,marray,varray):
         """ 
             Execute a phase/state with allocation = num_cores,
             No preemption while exection of a phase
@@ -144,7 +116,7 @@ class UE(object):
         else :
             if (num_cores <= 0): # No cores allocated
                 start      = self.ticks
-                self.ticks = self.ticks + 2 # Increment by 2.
+                self.ticks = self.ticks + 5 # Increment by 2.
                 finish     = self.ticks
 
                 return (start,finish)
@@ -155,9 +127,14 @@ class UE(object):
                 if (self.state == 0) :
                     self.start = start
     
-                mu,var     = get_et_dist(self.state+1,self.prbs,num_cores)
+                mu,var     = get_et_dist(self.state+1,self.prbs,num_cores,marray,varray)
+                
+                
+                #print(mu,var)
                 dist       = stats.norm(loc=mu,scale=np.sqrt(var))
                 exec_time  = dist.rvs(1)[0]
+                if (exec_time <= 0):
+                    raise ValueError("Execution Time cannot be negative, check the distribution")
                 
                 # Compute the slack and decide if the UE needs to be dropped
                 slack                     = self.deadline - (start + exec_time)
@@ -177,7 +154,7 @@ class UE(object):
                 #print("Execution Time : %f"%(finish-start))
                 return (start,finish)
 
-    def get_demand(self,dump=False):
+    def get_demand(self,marray,varray):
         """ 
             Make a demand for the number of cores
             for your next phase.
@@ -203,7 +180,7 @@ class UE(object):
             mu  = 0
             var = 0
             for s in rem_states :
-                t1, t2    = get_et_dist(s,w,m,dump)
+                t1, t2    = get_et_dist(s,w,m,marray,varray)
                 mu        = mu  + t1
                 var       = var + t2
             
@@ -212,11 +189,11 @@ class UE(object):
             risk = dist.sf(slack)
             risk_vs_alloc.append(risk)
         
-        if dump :
-            # Add code to display the slack
-            plt.legend()
-            plt.savefig("Risk-vs-Allocation.pdf")
-            plt.close()
+        # if dump :
+        #     # Add code to display the slack
+        #     plt.legend()
+        #     plt.savefig("Risk-vs-Allocation.pdf")
+        #     plt.close()
 
         norisk_array,   = np.where(np.array(risk_vs_alloc) <= dmrexp)
         if (np.size(norisk_array) == 0):
@@ -227,7 +204,7 @@ class UE(object):
         # print("slack:%f,state:%d"%(slack,self.state))
         # print(risk_vs_alloc)
         # print(norisk_array)
-        # print(demanded_cores)    
+        #print(demanded_cores)    
         return demanded_cores
     
     def get_curr_tick(self):
@@ -270,54 +247,70 @@ class UE(object):
         else :
             return (self.ticks >= other.ticks)
 
-    def update_risk(self,n,observed_dmr):
+    def set_risk(self,risk):
         """
             Dynamically update
             the per-instance risk.
         """
-        d = observed_dmr
-        
-        r = (n+1)*self.dmr - n*d
-        if r <= 0:
-            r = 10e-15
-        if r >= 1:
-            raise ValueError("r(=%f) cannot be greater that 1"%r)
-        self.risk = r
-        print("\n\nValue of N = %d, d-hat = %f, Risk = %f"%(n,d,r))
+        self.risk = risk
 
 
-def execute_1_ue(dmr,constrain=False):
+def execute_1_ue(ns,constrain=False,expshrink=False):
     """ Main Execution program """
 
-    # Generate a list of inputs 
-    num_subframes = 100
-    ue_list1 = [] #[dummy_ue(i,dmr,"Hard") for i in range(0,num_subframes)]
-    ue_list2 = [dummy_ue(i,dmr,"Soft") for i in range(0,num_subframes)]
-    ue_list  = ue_list1 + ue_list2
+    # Generate a list of input
+    dmr = 0.25 
+    num_subframes = ns
+    crnti1 = 2386
+    crnti2 = 9983
+    crnti3 = 9128
+    crnti4 = 4451
+    ue_list1 = [dummy_ue(i,dmr,crnti1) for i in range(0,num_subframes)]
+    ue_list2 = [dummy_ue(i,dmr,crnti2) for i in range(0,num_subframes)]
+    ue_list3 = [dummy_ue(i,dmr,crnti3) for i in range(0,num_subframes)]
+    ue_list4 = [dummy_ue(i,dmr,crnti4) for i in range(0,num_subframes)]
+    
+    ue_list  = ue_list1 + ue_list2 + ue_list3 + ue_list4
     heapq.heapify(ue_list)
 
     # Initialize the state variables
     NZ          = 10000*num_subframes
-    print(len(ue_list)*ptsl.NPH)
+    #print(len(ue_list)*ptsl.NPH)
     s           = np.zeros(NZ) # Start of n-th phase (irrespective of the UE/SF)
     f           = np.zeros(NZ) # Finish of the n-th phase
-    m           = np.zeros(NZ) # Available cores at the beginning of n-th phase
-    m[0]        = ptsl.M
-    d           = np.zeros(NZ) # demanded cores for the n-th phase
-    a           = np.zeros(NZ) # Allocated cores
+    m           = [0 for i in range(NZ)] # Total cores busy at beginning of time step n
+    d           = [0 for i in range(NZ)] # demanded cores for the n-th phase
+    a           = [0 for i in range(NZ)] # Allocated cores at beginning of time step n
+    u           = [0 for i in range(NZ)] # Available/Free Cores 
+    u[0]        = ptsl.M
     infq        = queue.Queue(maxsize=0) # Stores the number of computations that are inflight
+    
+    # Construct the distributions (For now assume all phases are balanced)
+    phD              = ptsl.D2/ptsl.NPH    # Relative Deadline of Each phase
+    #var              = (1e-4)*(phD)
+    var              = (1e-1)*(phD)
+    marray,varray    = psyn.construct_pdf(phD,ptsl.M,var,False)
+  
 
+    # "Global" Variables, whose state is maintained across subframe instances
+    #risk        = np.zeros(num_subframes)
+    #et          = []
     start_time  = timeit.default_timer()
-    missed      = 0
+    missed1      = 0
+    missed2      = 0
+    missed3      = 0
+    missed4      = 0
     n           = 0   # The n-th phase
     while len(ue_list) > 0:
         ue = heapq.heappop(ue_list)
 
         # Execute
-        #print(ue)
-        d[n] = ue.get_demand()
+        if expshrink :
+            d[n] = ue.get_demand(marray,varray)
+        else :
+            d[n] = 16 # Statically Allocate the cores
         s[n] = ue.get_curr_tick()
-        m[n] = ptsl.M
+        m[n] = 0
 
         
         # Constrain the number of cores available
@@ -327,27 +320,43 @@ def execute_1_ue(dmr,constrain=False):
         while num_inflight > 0:
             f2,a2 = infq.get(block=False)
             if (s[n] <= f2) :
-                m[n] = m[n] - a2   # Decrement the number of available cores
+                m[n] = m[n] + a2   # Decrement the number of available cores
                 infq.put((f2,a2))
             num_inflight = num_inflight-1
-        #print("a[n]=%d"%np.min([d[n],m[n]]))
-        # Cap the number of demanded cores to the total available
+    
+        u[n]    = ptsl.M - m[n]
+
+        # Cap the number of demanded cores to the total available (in a constrained system)
         if constrain :
-            a[n] = np.min([d[n],m[n]])
+            if not expshrink :
+                if d[n] > u[n] :
+                    a[n] = 0      # No cores to be allocated when demand is greater than is available
+                else :
+                    a[n] = d[n]
+            else :
+                a[n] = np.min([d[n],u[n]])
         else :
-            a[n] = d[n]
-        _,f[n]  = ue.execute(a[n])
+            a[n] = d[n]    
+        
+        _,f[n]  = ue.execute(a[n],marray,varray)
         infq.put((f[n],a[n])) # Enque the (potentially) inflight computation
 
-
+        # print("Finished Processing...")
+        # print(ue)
         # Store it back or discard it.
         if (ue.state == ptsl.NPH or ue.state == -1):
             if (ue.state == -1):
-                N = ue.subframe + 1
-                missed = missed + 1
+                if ue.crnti == crnti1 :
+                    missed1 = missed1 + 1
+                elif ue.crnti == crnti2 :
+                    missed2 = missed2 + 1
+                elif ue.crnti == crnti3 :
+                    missed3 = missed3 + 1
+                if ue.crnti == crnti4 :
+                    missed4 = missed4 + 1
+            # else :
+            #     et.append(ue.finish-ue.start)
             
-            if (ue.subframe % ptsl.H == 0) :
-                ue.update_risk(N,missed/N)
             print(ue)
         else :
             heapq.heappush(ue_list,ue)
@@ -357,14 +366,20 @@ def execute_1_ue(dmr,constrain=False):
         n = n+1
     
     elapsed = timeit.default_timer() - start_time
-    print("\n\nSimulation Time : %fs,DMR(observed) : %f"%(elapsed,missed/num_subframes))
+    print("\n\n")
+    print("Simulation Time : %fs,DMR-App1(observed) : %f"%(elapsed,missed1/num_subframes))
+    print("Simulation Time : %fs,DMR-App2(observed) : %f"%(elapsed,missed2/num_subframes))
+    print("Simulation Time : %fs,DMR-App3(observed) : %f"%(elapsed,missed3/num_subframes))
+    print("Simulation Time : %fs,DMR-App4(observed) : %f"%(elapsed,missed4/num_subframes))
     return (s,m,n)
 
   
 def main_test():
-    s,m,n = execute_1_ue(0.3)
-    max_demand = ptsl.M - np.min(m)
-    plt.plot(s[0:n],m[0:n],label="Maximum Demand : %d"%max_demand)
+    NS   = 5000
+    s,m,n = execute_1_ue(NS,constrain=True,expshrink=True)
+    max_demand = np.max(m)
+    avg_demand = np.mean(m)
+    plt.plot(s[0:n],m[0:n],label="Demand (Max:%d,Avg:%f)"%(max_demand,avg_demand))
     plt.xlabel("Time")
     plt.ylabel("Available Cores")
     plt.title("Resource Usage Profile (To meet the DMR)")
@@ -374,4 +389,3 @@ def main_test():
         
 if __name__=="__main__":
     main_test()
-    #get_et_dist(3,1,1)
