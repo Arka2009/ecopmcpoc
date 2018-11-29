@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from scipy import stats
 import ptss_utils as ptsl
 import ptss_synthpdf as psyn
+import ptss_dfspdf as pgen
 import heapq
 import queue
 import timeit
@@ -117,7 +118,7 @@ class UE(object):
         else :
             if (num_cores <= 0): # No cores allocated
                 start      = self.ticks
-                self.ticks = self.ticks + 5 # Increment by 2.
+                self.ticks = self.ticks + ptsl.NW # Increment by 2.
                 finish     = self.ticks
 
                 return (start,finish)
@@ -290,7 +291,8 @@ def execute_1_ue(ns,dmr2,constrain=False,expshrink=False):
     phD              = ptsl.D2/ptsl.NPH    # Relative Deadline of Each phase
     #var              = (1e-4)*(phD)
     var              = (1e-1)*(phD)
-    marray,varray    = psyn.construct_pdf(phD,ptsl.M,var,False)
+    #marray,varray    = psyn.construct_pdf(phD,ptsl.M,var,False)
+    marray,varray     = pgen.get_pdf()
   
 
     # "Global" Variables, whose state is maintained across subframe instances
@@ -376,14 +378,15 @@ def execute_1_ue(ns,dmr2,constrain=False,expshrink=False):
 
   
 def main_test():
-    NS   = 500
+    NS   = 5000
     s,f,m,n = execute_1_ue(NS,0.23,constrain=True,expshrink=True)
     max_demand = np.max(m)
     sum2 = 0
     for t in range(1,n):
         delt = s[t] - s[t-1]
-        sum2 = sum2 + delt*m[t]
+        sum2 = sum2 + delt*m[t-1]
     #print("t:%d,n:%d"%(t,n))
+    sum2 = sum2 + (f[t]-s[t])*m[t]
     avg_demand = sum2/(f[t]-s[0]) 
     print("Demand (Max:%d,Avg:%f)"%(max_demand,avg_demand))
     # print(all(s[i] <= s[i+1] for i in range(len(s[0:n])-1)))
