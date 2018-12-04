@@ -18,8 +18,8 @@ from enum import Enum
 
 # Global Constants
 NUMBINS   = 2000                    # Used Internally by CDF and PDFs functions
-T         = 500                     # Arrival (Unit unspecified)
-D         = 350                     # Deadline (relative to arrival time)
+T         = 216                   # Arrival (Unit unspecified)
+D         = T                     # Deadline (relative to arrival time)
 D2        = 2500                    # Used for synthetically generating the execution time distribution
 M         = 32                      # Total number of Cores available in the system
 W         = 100                     # Total number of PRBs 
@@ -103,19 +103,24 @@ def is_final(curr_state):
 #ph2s2_rempcom_db   = np.full((W,M,23997),-1.2)
 #ph3s2_remcomp_db   = np.full((W,M,11999),-1.2)
 
-def close(a,b,tol=1e-3):
+def close(a,b,tol=1e-3,prnt=False):
     """ 
         Check if two values are nearly close 
         to each other.
+
+        a is the reference value
     """
-    if abs(a) > 0 and abs(b) > 0:
-        err = abs(a-b)/np.min([abs(a),abs(b)])
+    if abs(a) > 0 :
+        den = abs(a)
+        err = abs(a-b)/den
+        if prnt :
+            print("a:%f,b:%f,err:%f"%(a,b,err))
         if err < tol :
             return True
         else :
             return False
     else :
-        raise ValueError("Both values must be non-zero")
+        return True
 
 class etPDF(object):
     """ 

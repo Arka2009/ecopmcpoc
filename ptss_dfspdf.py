@@ -27,7 +27,7 @@ def get_rgb():
 def get_pdf(plot=False):
     """
         Creates a mu and var for a
-        normal distribution
+        normal approximation
     """
     dir2 = "/home/amaity/Dropbox/NUS-Datasets/ptss-poc/dfs_all_allocation"
     M    = 32
@@ -40,7 +40,7 @@ def get_pdf(plot=False):
         et = (df['time'].values)*1000
 
         tmu = np.mean(et)
-        var = np.std(et)
+        var = np.std(et)**2
         mu.append(tmu)
         vr.append(var)
 
@@ -62,14 +62,67 @@ def get_pdf(plot=False):
         plt.savefig("generated-dist.pdf")
         plt.close()
 
+    # print(list(range(1,M+1)))
+    # print("\n")
+    # print(mu)
+    # print("\n")
+    # print(vr)
+
+    # Export to CSV file
+    # f2  = open("mu_vars_dfs.csv","w")
+    # f2.write("alloc,mu,var\n")
+    # for m in range(1,M+1) :
+    #     f2.write("%d,%f,%f\n"%(m,mu[m-1],vr[m-1]))
+    # f2.close()
+
+    # Draw The Speed-up curve and execution Time Characteristics
+    # s = mu[0] / mu
+    # plt.plot(range(1,M+1),s)
+    # plt.title("Execution Time Speedup")
+    # plt.xlabel("Allocation")
+    # plt.ylabel("Speed-up")
+    # plt.savefig("speed-up-dfs.pdf")
+    # plt.close()
+
+    # s2 = np.sqrt(vr) * 100 / mu
+    # plt.plot(range(1,M+1),s2)
+    # plt.title("Coeffecient of Varition of Execution Time")
+    # plt.xlabel("Allocation")
+    # plt.ylabel("Coeffecient of Varition (%)")
+    # plt.savefig("coeffvar-dfs.pdf")
+    # plt.close()
+
     return (mu,vr)
 
-def main_test2():
-    mu,var = get_pdf(False)
-    plt.plot(range(1,33),mu)
+def gen_hist(numbins):
+    """
+        Generate a histogram (pdf) for
+        a given dataset
+    """
+    dir2  = "/home/amaity/Dropbox/NUS-Datasets/ptss-poc/dfs_all_allocation"
+    M     = 32
+    dist  = []
+
+    for m2 in range(1,M+1):
+        fl = dir2+"/dataset_ph5_alloc-"+str(m2)+".csv"
+        df = pd.read_csv(fl)
+        et = (df['time'].values)*1000
+
+        hist = np.histogram(et,bins=numbins)
+        t3   = stats.rv_histogram(hist)
+        dist.append(t3)
     
+    return dist
+
+def main_test2():
+#    mu,var = get_pdf(False)
+#    plt.plot(range(1,33),mu)
+#    
 #    print(mu)
 #    print(var)
+    # dista = gen_hist(100)
+    # print(dista)
+    get_pdf(plot=False)
 
 if __name__=="__main__":
     main_test2()
