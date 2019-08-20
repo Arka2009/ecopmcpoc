@@ -1,3 +1,3 @@
-# PTSS (Probabilistic Timing Sensitive Systems)
+# PMC5G (Probabilistic Mixed Criticality Systems for 5G)
 -----------------------------------------------
-1. Python/C++ proof of concept models to study to study probabilistic timing sensitiving scheduling
+1. Probabilistic Mixed Criticality (MC) for Timed Systems especially for cellular applications
