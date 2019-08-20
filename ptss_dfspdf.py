@@ -14,85 +14,99 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from scipy import special as sp
 import pandas as pd
+from matplotlib import rc
+
+plt.rc('text', usetex=True)
+plt.rc('font', family='serif')
 
 def get_rgb():
     """
         Generate random RGB value
     """
     r = np.random.uniform()
-    g = np.random.uniform()
-    b = np.random.uniform()
+    g = r #np.random.uniform()
+    b = r #np.random.uniform()
+    rgb = rgb-0.3
     return (r,g,b)
 
-def get_pdf(plot=False):
+def get_pdf(plot=False,write=True):
     """
         Creates a mu and var for a
         normal approximation
     """
-    dir2 = "/home/amaity/Dropbox/NUS-Datasets/ptss-poc/dfs_all_allocation"
+    dir2 = "/home/amaity/Dropbox/NUS-Research/ptss_risk_model/ptss-poc/dfs_all_allocation_power"
     M    = 32
     mu  = []
     vr  = []
+    ppgpower = []
+    
+    if write:
+        fl2 = open(dir2+"/mu_vars_enrg.csv",mode='w')
+        fl2.write("alloc,mu-time,var-time,mu-enrg,var-enrg,ppg-power\n")
 
+    r = 0.01
     for m2 in range(1,M+1):
-        fl = dir2+"/dataset_ph5_alloc-"+str(m2)+".csv"
+        fl = dir2+"/dataset_dfs_"+str(m2)+".csv"
         df = pd.read_csv(fl)
-        et = (df['time'].values)*1000
+        et = (df['TIME'].values)
+        ppg2 = (df['PKG-ENRG'].values)
+        
+        # Cleanup Values in MSR readings
+        mdn = np.median(ppg2)
+        #ppg = np.array(filter(lambda u : u > 0 and u < abs(1000*mdn), ppg2))
+        ppg = [u for u in ppg2 if (u > 0 and u < abs(1000*mdn))]
 
         tmu = np.mean(et)
         var = np.std(et)**2
+        tppgavg = np.mean(ppg)
+        tppgvar = np.std(ppg)**2
+        
         mu.append(tmu)
         vr.append(var)
+        ppgpower.append(tppgavg*1000/tmu)
 
         # Create Plots
         if plot:
-            if m2 % 5 == 0:
-                c    = get_rgb() 
+            if m2 % 10 == 0:
+                c    = (r,r,r)
+                r    = r + 0.20
                 dist = stats.norm(loc=tmu,scale=np.sqrt(var))
                 x    = np.linspace(dist.ppf(0.001),dist.ppf(0.999),1000)
                 y    = dist.pdf(x)
                 plt.plot(x,y,label="m=%d"%m2,color=c)
                 plt.hist(et,bins=800,density=True,color=c)
+        
+        # Dump the values to a file
+        if write:
+            fl2.write("%d,%f,%f,%f,%f,%f\n"%(m2,tmu,var,tppgavg,tppgvar,tppgavg*1000/tmu))
 
     
     if plot:
         plt.legend()
-        plt.xlabel("Execution Time")
-        plt.title("DFS Lace PDFs")
-        plt.savefig("generated-dist.pdf")
+        plt.xlabel("Execution Time (ms)")
+        plt.ylabel("Probability Density")
+        plt.title("Distribution of Execution Time of a phase")
+        plt.savefig("generated-dist.pdf",bbox_inches='tight')
         plt.close()
 
-    # print(list(range(1,M+1)))
-    # print("\n")
-    # print(mu)
-    # print("\n")
-    # print(vr)
-
-    # Export to CSV file
-    # f2  = open("mu_vars_dfs.csv","w")
-    # f2.write("alloc,mu,var\n")
-    # for m in range(1,M+1) :
-    #     f2.write("%d,%f,%f\n"%(m,mu[m-1],vr[m-1]))
-    # f2.close()
-
-    # Draw The Speed-up curve and execution Time Characteristics
-    # s = mu[0] / mu
-    # plt.plot(range(1,M+1),s)
-    # plt.title("Execution Time Speedup")
+    if write:
+        fl2.close()
+    
+    # Plot The characteristics
+    # plt.plot(range(1,M+1),ppgpower)
     # plt.xlabel("Allocation")
-    # plt.ylabel("Speed-up")
-    # plt.savefig("speed-up-dfs.pdf")
+    # plt.ylabel("Package Power Consumed (Watts)")
+    # plt.savefig(dir2+"/power.pdf")
     # plt.close()
-
-    # s2 = np.sqrt(vr) * 100 / mu
-    # plt.plot(range(1,M+1),s2)
-    # plt.title("Coeffecient of Varition of Execution Time")
+    
+    # plt.plot(range(1,M+1),mu)
     # plt.xlabel("Allocation")
-    # plt.ylabel("Coeffecient of Varition (%)")
-    # plt.savefig("coeffvar-dfs.pdf")
+    # plt.ylabel("Latency (ms)")
+    # plt.savefig(dir2+"/latency.pdf")
     # plt.close()
-
-    return (mu,vr)
+    
+    
+    return (mu,vr,ppgpower)
 
 def gen_hist(numbins):
     """
@@ -115,14 +129,7 @@ def gen_hist(numbins):
     return dist
 
 def main_test2():
-#    mu,var = get_pdf(False)
-#    plt.plot(range(1,33),mu)
-#    
-#    print(mu)
-#    print(var)
-    # dista = gen_hist(100)
-    # print(dista)
-    get_pdf(plot=False)
+    get_pdf(plot=True,write=False)
 
 if __name__=="__main__":
     main_test2()

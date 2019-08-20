@@ -21,3 +21,12 @@ dump/
 pdf-db*/
 images/
 *.npy
+
+# Datasets
+datasets/
+
+# Editor files
+*.swo
+*.svp
+*.swp
+.vscode/

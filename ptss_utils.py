@@ -18,13 +18,13 @@ from enum import Enum
 
 # Global Constants
 NUMBINS   = 2000                    # Used Internally by CDF and PDFs functions
-T         = 216                   # Arrival (Unit unspecified)
+T         = 120 #100.196695                   # Arrival (Unit unspecified)
 D         = T                     # Deadline (relative to arrival time)
 D2        = 2500                    # Used for synthetically generating the execution time distribution
-M         = 32                      # Total number of Cores available in the system
+M         = 64                      # Total number of Cores available in the system
 W         = 100                     # Total number of PRBs 
 TD        = np.arange(0,D,0.1)      # Discretized Time Steps
-NPH       = 5                       # Total number of phaes (assumed to be same for all the UE)
+NPH       = 2                       # Total number of phaes (assumed to be same for all the UE)
 NW        = 1                       # Ticks to wait when no-cores are allocated
 
 ##(Check 16000/12000/10000)
@@ -103,7 +103,7 @@ def is_final(curr_state):
 #ph2s2_rempcom_db   = np.full((W,M,23997),-1.2)
 #ph3s2_remcomp_db   = np.full((W,M,11999),-1.2)
 
-def close(a,b,tol=1e-3,prnt=False):
+def close(a,b,tol=1e-3,prnt=True):
     """ 
         Check if two values are nearly close 
         to each other.
@@ -116,6 +116,7 @@ def close(a,b,tol=1e-3,prnt=False):
         if prnt :
             print("a:%f,b:%f,err:%f"%(a,b,err))
         if err < tol :
+            #print(err)
             return True
         else :
             return False
